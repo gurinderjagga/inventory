@@ -28,9 +28,9 @@ app.use((err, req, res, _next) => {
 });
 
 // ── Static Frontend ──────────────────────────────────────────
-// Serve React build (client/dist) in production.
+// Serve React build (frontend/dist) in production.
 // In development, Vite handles the frontend on port 5173.
-const reactDist = path.join(__dirname, 'client', 'dist');
+const reactDist = path.join(__dirname, '..', 'frontend', 'dist');
 if (fs.existsSync(reactDist)) {
   app.use(express.static(reactDist));
   app.get('*', (_req, res) => res.sendFile(path.join(reactDist, 'index.html')));

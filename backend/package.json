@@ -1,0 +1,25 @@
+{
+  "name": "inventory-management",
+  "version": "1.0.0",
+  "description": "Company-wise inventory management and invoicing system",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "dev:api": "nodemon --exec \"node --no-warnings\" server.js",
+    "dev:client": "cd client && npm run dev",
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:client\"",
+    "build": "cd client && npm run build",
+    "seed": "node --no-warnings database/seed.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "pdfkit": "^0.15.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.0"
+  }
+}
