@@ -33,6 +33,42 @@ if (config.isCrossSite) {
   console.log(`🔓  CORS enabled for: ${config.CORS_ORIGINS.join(', ')}`);
 }
 
+/**
+ * Ensure the schema exists and the admin account is present.
+ *
+ * Memoised, so it runs at most once per process. A long-running server awaits
+ * it before listening; a serverless instance awaits it on its first request
+ * and every later request on that instance resolves instantly.
+ *
+ * The promise is cleared on failure so the next request retries rather than
+ * caching a rejection for the life of the instance.
+ */
+// Serverless instances pay the schema check on every cold start (~2-3s against
+// a remote database). Set SKIP_DB_INIT=true once the schema is in place — the
+// seeder applies it — to trade that for a fast first request. Leave it unset
+// and the app is self-provisioning against an empty database.
+const SKIP_DB_INIT = process.env.SKIP_DB_INIT === 'true';
+
+let readyPromise = null;
+function ensureReady() {
+  if (!readyPromise) {
+    readyPromise = (async () => {
+      if (SKIP_DB_INIT) return false;
+      await initDB();
+      try {
+        return await ensureAdminUser();
+      } catch (err) {
+        console.error('⚠️   Could not verify the admin user:', err.message);
+        return false;
+      }
+    })().catch((err) => {
+      readyPromise = null;
+      throw err;
+    });
+  }
+  return readyPromise;
+}
+
 // ── Global Middleware ────────────────────────────────────────
 // JSON only, deliberately.
 //
@@ -45,6 +81,12 @@ if (config.isCrossSite) {
 // would reopen that hole; nothing here posts form bodies.
 app.use(express.json());
 app.use(cookieParser());
+
+// Block requests until the schema is ready. A no-op once resolved, so this
+// costs nothing after the first request on any given instance.
+app.use((req, res, next) => {
+  ensureReady().then(() => next()).catch(next);
+});
 
 // ── API Routes ───────────────────────────────────────────────
 app.use('/api/auth',      require('./routes/auth'));
@@ -132,23 +174,17 @@ app.use((err, req, res, _next) => {
  * so a failure here is fatal rather than something to retry silently.
  */
 async function start() {
+  let createdAdmin = false;
   try {
-    await initDB();
+    // Same readiness step the request gate uses — done up front here so a bad
+    // DATABASE_URL fails loudly at boot instead of on the first request.
+    createdAdmin = await ensureReady();
   } catch (err) {
     console.error('\n❌  Could not connect to the database.');
     console.error(`    ${err.message}`);
     console.error('    Check DATABASE_URL in backend/.env, then try again.\n');
     await closeDB().catch(() => {});
     process.exit(1);
-  }
-
-  // First boot against an empty database: create the admin account, otherwise
-  // there is no way to log in and no indication why.
-  let createdAdmin = false;
-  try {
-    createdAdmin = await ensureAdminUser();
-  } catch (err) {
-    console.error('⚠️   Could not verify the admin user:', err.message);
   }
 
   app.listen(PORT, () => {
@@ -164,6 +200,8 @@ async function start() {
 }
 
 // Release pooled connections so Neon does not hold them open after we exit.
+// Only meaningful for a long-running process; serverless instances are frozen
+// rather than signalled, and Neon reaps their idle connections itself.
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, async () => {
     console.log(`\n${signal} received — shutting down.`);
@@ -172,4 +210,12 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   });
 }
 
-start();
+// Bind a port only when run directly (`node server.js`, nodemon, a container).
+// When required — as the serverless entry point in api/index.js does — the app
+// is handed to the platform, which owns the listening socket. Calling listen()
+// there would be wrong and, on some platforms, fatal.
+if (require.main === module) {
+  start();
+}
+
+module.exports = app;
