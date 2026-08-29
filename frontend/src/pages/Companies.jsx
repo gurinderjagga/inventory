@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '../api.js';
+import { api, isAuthError } from '../api.js';
 import { useToast } from '../contexts/ToastContext.jsx';
+import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
 const EMPTY_FORM = { name: '', email: '', phone: '', address: '' };
 
 export default function Companies() {
-  const { toast } = useToast();
+  const { toast }   = useToast();
+  const { isAdmin } = useAuth();
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [search, setSearch]       = useState('');
@@ -22,7 +24,7 @@ export default function Companies() {
       const data = await api.getCompanies();
       setCompanies(data);
     } catch (e) {
-      toast.error(e.message);
+      if (!isAuthError(e)) toast.error(e.message);
     } finally {
       setLoading(false);
     }
@@ -74,13 +76,16 @@ export default function Companies() {
   /* ── Delete ─────────────────────────────────────────── */
   const handleDelete = async () => {
     if (!confirm) return;
+    const { id, name } = confirm;
+    // Close the dialog whatever happens — leaving it open on failure made the
+    // Delete button look dead while the real reason sat in a toast behind it.
+    setConfirm(null);
     try {
-      await api.deleteCompany(confirm.id);
-      toast.success(`"${confirm.name}" deleted.`);
-      setConfirm(null);
+      await api.deleteCompany(id);
+      toast.success(`"${name}" deleted.`);
       load();
     } catch (e) {
-      toast.error(e.message);
+      if (!isAuthError(e)) toast.error(e.message, 'Could not delete company');
     }
   };
 
@@ -97,18 +102,26 @@ export default function Companies() {
       {/* Header */}
       <div className="page-header">
         <div className="page-header-text">
-          <h2>All Companies</h2>
-          <p>{companies.length} {companies.length === 1 ? 'company' : 'companies'} registered</p>
+          <h2>{isAdmin ? 'All Companies' : 'My Company'}</h2>
+          <p>
+            {isAdmin
+              ? `${companies.length} ${companies.length === 1 ? 'company' : 'companies'} registered`
+              : 'Details shown on your invoices'}
+          </p>
         </div>
-        <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
-          <div className="search-wrap">
-            <i className="bi bi-search" />
-            <input placeholder="Search companies…" value={search} onChange={e => setSearch(e.target.value)} />
+        {/* Search over a single row is noise, and only a platform admin may
+            create companies — the API answers 403 for anyone else. */}
+        {isAdmin && (
+          <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
+            <div className="search-wrap">
+              <i className="bi bi-search" />
+              <input placeholder="Search companies…" value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+            <button className="btn btn-primary" onClick={openAdd}>
+              <i className="bi bi-plus-lg" /> Add Company
+            </button>
           </div>
-          <button className="btn btn-primary" onClick={openAdd}>
-            <i className="bi bi-plus-lg" /> Add Company
-          </button>
-        </div>
+        )}
       </div>
 
       {/* Table */}
@@ -155,9 +168,12 @@ export default function Companies() {
                       <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>
                         <i className="bi bi-pencil" /> Edit
                       </button>
-                      <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}>
-                        <i className="bi bi-trash3" />
-                      </button>
+                      {/* Deleting a tenant is platform-admin only. */}
+                      {isAdmin && (
+                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}>
+                          <i className="bi bi-trash3" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -210,7 +226,7 @@ export default function Companies() {
       <ConfirmDialog
         isOpen={!!confirm}
         title="Delete Company"
-        message={`Are you sure you want to delete <strong>${confirm?.name}</strong>? All its stock items will also be removed. This cannot be undone.`}
+        message={<>Delete <strong>{confirm?.name}</strong>? Its stock items will be removed too, and this cannot be undone. Companies that already have invoices cannot be deleted.</>}
         confirmText="Delete"
         danger
         onConfirm={handleDelete}

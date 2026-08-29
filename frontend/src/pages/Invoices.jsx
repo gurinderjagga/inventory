@@ -1,14 +1,26 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '../api.js';
+import { api, isAuthError } from '../api.js';
 import { useToast } from '../contexts/ToastContext.jsx';
+import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
 /* ── New Invoice line-item state helper ─────────────── */
-const emptyLine = () => ({ item_id: '', item_name: '', quantity: 1, unit_price: 0 });
+// quantity and unit_price are held as raw strings while the user types.
+// Parsing on every keystroke made partial input impossible: "0." parsed to 0
+// and overwrote the field, so a value like 0.5 could never be entered, and
+// clearing the box snapped it straight back to 0.
+const emptyLine = () => ({ item_id: '', item_name: '', quantity: '1', unit_price: '0' });
+
+/** Parse a partially-typed numeric field for display and arithmetic. */
+const toNum = (value) => {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : 0;
+};
 
 export default function Invoices() {
   const { toast }             = useToast();
+  const { isAdmin }           = useAuth();
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [search, setSearch]     = useState('');
@@ -34,7 +46,7 @@ export default function Invoices() {
     try {
       const data = await api.getInvoices();
       setInvoices(data);
-    } catch (e) { toast.error(e.message); }
+    } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
     finally { setLoading(false); }
   }, [toast]);
 
@@ -52,12 +64,20 @@ export default function Invoices() {
       const data = await api.getCompanies();
       if (!data.length) { toast.warning('Add a company first before creating an invoice.'); return; }
       setCompanies(data);
-      setInvForm({ company_id: '', customer_name: '', customer_email: '', notes: '', tax_rate: '0' });
       setLines([]);
       setCompanyItems([]);
       setCreateErr('');
+
+      // A company admin has exactly one company, so choose it for them and
+      // load its items straight away rather than showing a single-option list.
+      if (!isAdmin && data.length === 1) {
+        setInvForm({ company_id: String(data[0].id), customer_name: '', customer_email: '', notes: '', tax_rate: '0' });
+        setCompanyItems(await api.getItems(data[0].id));
+      } else {
+        setInvForm({ company_id: '', customer_name: '', customer_email: '', notes: '', tax_rate: '0' });
+      }
       setCreateOpen(true);
-    } catch (e) { toast.error(e.message); }
+    } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
   };
 
   /* ── Company changed → load items ──────────────────── */
@@ -68,7 +88,7 @@ export default function Invoices() {
     try {
       const items = await api.getItems(cid);
       setCompanyItems(items);
-    } catch (e) { toast.error(e.message); }
+    } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
   };
 
   /* ── Line item helpers ──────────────────────────────── */
@@ -81,11 +101,15 @@ export default function Invoices() {
 
   const onLineItemChange = (idx, itemId) => {
     const item = companyItems.find(i => String(i.id) === String(itemId));
-    updateLine(idx, { item_id: itemId, item_name: item?.name || '', unit_price: item?.unit_price || 0 });
+    updateLine(idx, {
+      item_id:    itemId,
+      item_name:  item?.name || '',
+      unit_price: String(item?.unit_price ?? 0),
+    });
   };
 
   /* ── Totals ─────────────────────────────────────────── */
-  const subtotal = lines.reduce((s, l) => s + (l.quantity * l.unit_price), 0);
+  const subtotal = lines.reduce((s, l) => s + toNum(l.quantity) * toNum(l.unit_price), 0);
   const taxRate  = parseFloat(invForm.tax_rate) || 0;
   const tax      = subtotal * (taxRate / 100);
   const total    = subtotal + tax;
@@ -97,17 +121,24 @@ export default function Invoices() {
     if (!invForm.customer_name.trim()) { setCreateErr('Customer name is required.'); return; }
     if (lines.length === 0) { setCreateErr('Add at least one line item.'); return; }
     if (lines.some(l => !l.item_id)) { setCreateErr('All line items must have an item selected.'); return; }
-    if (lines.some(l => l.quantity <= 0)) { setCreateErr('All quantities must be greater than 0.'); return; }
+    if (lines.some(l => toNum(l.quantity) <= 0)) { setCreateErr('All quantities must be greater than 0.'); return; }
 
     setCreating(true);
     try {
+      // Select values are strings; send real numbers so the payload does not
+      // depend on the database coercing "3" into an integer.
       await api.createInvoice({
-        company_id:     invForm.company_id,
+        company_id:     Number(invForm.company_id),
         customer_name:  invForm.customer_name.trim(),
         customer_email: invForm.customer_email.trim() || null,
         notes:          invForm.notes.trim() || null,
         tax_rate:       taxRate,
-        line_items:     lines,
+        line_items:     lines.map(l => ({
+          item_id:    Number(l.item_id),
+          item_name:  l.item_name,
+          quantity:   toNum(l.quantity),
+          unit_price: toNum(l.unit_price),
+        })),
       });
       toast.success('Invoice created as draft. Finalize it to deduct stock.');
       setCreateOpen(false);
@@ -124,32 +155,35 @@ export default function Invoices() {
     try {
       const inv = await api.getInvoice(id);
       setViewInv(inv);
-    } catch (e) { toast.error(e.message); }
+    } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
   };
 
   /* ── Finalize ───────────────────────────────────────── */
   const handleFinalize = async () => {
     if (!finalizeConfirm) return;
+    const { id } = finalizeConfirm;
+    setFinalizeConfirm(null);
     try {
-      await api.finalizeInvoice(finalizeConfirm.id);
+      await api.finalizeInvoice(id);
       toast.success('Invoice finalized and stock deducted!');
-      setFinalizeConfirm(null);
       load();
     } catch (e) {
-      toast.error(e.message, 'Finalization Failed');
-      setFinalizeConfirm(null);
+      if (!isAuthError(e)) toast.error(e.message, 'Finalization Failed');
     }
   };
 
   /* ── Delete draft ───────────────────────────────────── */
   const handleDelete = async () => {
     if (!deleteConfirm) return;
+    const { id } = deleteConfirm;
+    setDeleteConfirm(null);
     try {
-      await api.deleteInvoice(deleteConfirm.id);
+      await api.deleteInvoice(id);
       toast.success('Draft deleted.');
-      setDeleteConfirm(null);
       load();
-    } catch (e) { toast.error(e.message); }
+    } catch (e) {
+      if (!isAuthError(e)) toast.error(e.message, 'Could not delete invoice');
+    }
   };
 
   const fld = (key) => ({
@@ -253,11 +287,22 @@ export default function Invoices() {
         {/* Form fields */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
           <div className="form-group" style={{ margin: 0 }}>
-            <label>Company <span style={{ color: 'var(--danger)' }}>*</span></label>
-            <select value={invForm.company_id} onChange={e => onCompanyChange(e.target.value)}>
-              <option value="">Select company…</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <label>Company {isAdmin && <span style={{ color: 'var(--danger)' }}>*</span>}</label>
+            {isAdmin ? (
+              <select value={invForm.company_id} onChange={e => onCompanyChange(e.target.value)}>
+                <option value="">Select company…</option>
+                {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              // Fixed for a company admin — shown for confirmation, not choice.
+              <div style={{
+                padding: '9px 12px', background: 'var(--bg-input)', borderRadius: 8,
+                fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <i className="bi bi-building" style={{ color: 'var(--text-muted)' }} />
+                {companies[0]?.name ?? '—'}
+              </div>
+            )}
           </div>
           <div className="form-group" style={{ margin: 0 }}>
             <label>Customer Name <span style={{ color: 'var(--danger)' }}>*</span></label>
@@ -311,14 +356,14 @@ export default function Invoices() {
                       </td>
                       <td style={{ width: 90 }}>
                         <input type="number" min="0.01" step="0.01" value={line.quantity}
-                          onChange={e => updateLine(idx, { quantity: parseFloat(e.target.value) || 0 })} />
+                          onChange={e => updateLine(idx, { quantity: e.target.value })} />
                       </td>
                       <td style={{ width: 110 }}>
                         <input type="number" min="0" step="0.01" value={line.unit_price}
-                          onChange={e => updateLine(idx, { unit_price: parseFloat(e.target.value) || 0 })} />
+                          onChange={e => updateLine(idx, { unit_price: e.target.value })} />
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                        ${(line.quantity * line.unit_price).toFixed(2)}
+                        ${(toNum(line.quantity) * toNum(line.unit_price)).toFixed(2)}
                       </td>
                       <td style={{ width: 40 }}>
                         <button className="btn btn-danger btn-icon btn-sm" onClick={() => removeLine(idx)}>
@@ -434,13 +479,13 @@ export default function Invoices() {
 
       {/* Finalize confirm */}
       <ConfirmDialog isOpen={!!finalizeConfirm} title="Finalize Invoice"
-        message={`Finalize <strong>${finalizeConfirm?.no}</strong>? Stock will be permanently deducted. This cannot be undone.`}
+        message={<>Finalize <strong>{finalizeConfirm?.no}</strong>? Stock will be permanently deducted. This cannot be undone.</>}
         confirmText="Finalize & Deduct Stock"
         onConfirm={handleFinalize} onCancel={() => setFinalizeConfirm(null)} />
 
       {/* Delete confirm */}
       <ConfirmDialog isOpen={!!deleteConfirm} title="Delete Draft Invoice"
-        message={`Delete draft <strong>${deleteConfirm?.no}</strong>? This cannot be undone.`}
+        message={<>Delete draft <strong>{deleteConfirm?.no}</strong>? This cannot be undone.</>}
         confirmText="Delete" danger
         onConfirm={handleDelete} onCancel={() => setDeleteConfirm(null)} />
     </div>

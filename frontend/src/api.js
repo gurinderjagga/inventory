@@ -1,5 +1,18 @@
 /** Centralised API client — same-origin, credentials included */
 
+/** Marker for a rejected-because-the-session-ended error. */
+export const AUTH_EXPIRED = 'AUTH_EXPIRED';
+
+/**
+ * True when a rejection came from an expired or missing session.
+ *
+ * Session expiry is already handled globally: the request layer fires
+ * `auth:expired`, AuthContext clears the user, and the router redirects to
+ * /login. Callers use this to stay quiet about it rather than flashing a
+ * meaningless "Unauthorized" toast on the way out.
+ */
+export const isAuthError = (err) => err?.code === AUTH_EXPIRED;
+
 async function request(method, path, body) {
   const opts = {
     method,
@@ -13,9 +26,15 @@ async function request(method, path, body) {
 
   if (res.status === 401) {
     window.dispatchEvent(new CustomEvent('auth:expired'));
-    throw new Error('Unauthorized');
+    const err = new Error(data.error || 'Your session has ended. Please log in again.');
+    err.code = AUTH_EXPIRED;
+    throw err;
   }
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -24,6 +43,14 @@ export const api = {
   login:  (u, p) => request('POST', '/api/auth/login', { username: u, password: p }),
   logout: ()     => request('POST', '/api/auth/logout'),
   me:     ()     => request('GET',  '/api/auth/me'),
+  changePassword: (current, next) =>
+    request('POST', '/api/auth/change-password', { current_password: current, new_password: next }),
+
+  // Users (platform admin only)
+  getUsers:   ()      => request('GET',    '/api/users'),
+  createUser: (d)     => request('POST',   '/api/users', d),
+  updateUser: (id, d) => request('PUT',    `/api/users/${id}`, d),
+  deleteUser: (id)    => request('DELETE', `/api/users/${id}`),
 
   // Companies
   getCompanies:  ()        => request('GET',    '/api/companies'),

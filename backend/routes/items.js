@@ -1,92 +1,122 @@
 const express = require('express');
-const { getDB } = require('../database/db');
+const { query } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
+const { asyncHandler } = require('../middleware/asyncHandler');
+const { companyScope, assertCompanyAccess, resolveCompanyId } = require('../middleware/authorize');
+const { NotFoundError, ConflictError } = require('../lib/errors');
+const v = require('../lib/validate');
 
 const router = express.Router();
 router.use(authMiddleware);
 
+/**
+ * Read and validate the item payload shared by POST and PUT, so both enforce
+ * the same rules.
+ *
+ * Defaults apply only when a field is genuinely absent: an explicit 0 is kept,
+ * and unparseable input is rejected rather than silently defaulted.
+ */
+function readBody(body) {
+  return {
+    name:       v.requiredString(body.name, 'Item name'),
+    sku:        v.optionalString(body.sku),
+    unit:       v.optionalString(body.unit) || 'pcs',
+    quantity:   v.nonNegativeNumber(body.quantity,   'Quantity',   { fallback: 0 }),
+    unitPrice:  v.nonNegativeNumber(body.unit_price, 'Unit price', { fallback: 0 }),
+    threshold:  v.nonNegativeNumber(body.low_stock_threshold, 'Low stock threshold', { fallback: 10 }),
+  };
+}
+
 // GET /api/items/company/:companyId  — items scoped to a company
-router.get('/company/:companyId', (req, res) => {
-  const db = getDB();
-  const items = db.prepare(
-    'SELECT * FROM items WHERE company_id = ? ORDER BY name ASC'
-  ).all(req.params.companyId);
-  res.json(items);
-});
+router.get('/company/:companyId', asyncHandler(async (req, res) => {
+  const companyId = v.id(req.params.companyId, 'Company id');
+  // Asking for another tenant's stock reads as "no such company".
+  assertCompanyAccess(req, companyId, 'Company not found');
+
+  const { rows } = await query(
+    'SELECT * FROM items WHERE company_id = $1 ORDER BY name ASC',
+    [companyId]
+  );
+  res.json(rows);
+}));
 
 // GET /api/items/:id
-router.get('/:id', (req, res) => {
-  const db = getDB();
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id);
-  if (!item) return res.status(404).json({ error: 'Item not found' });
-  res.json(item);
-});
+router.get('/:id', asyncHandler(async (req, res) => {
+  const id = v.id(req.params.id, 'Item id');
+  const { rows } = await query(
+    'SELECT * FROM items WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
+    [id, companyScope(req)]
+  );
+  if (!rows[0]) throw new NotFoundError('Item not found');
+  res.json(rows[0]);
+}));
 
 // POST /api/items
-router.post('/', (req, res) => {
-  const { company_id, name, sku, unit, quantity, unit_price, low_stock_threshold } = req.body;
-  if (!company_id) return res.status(400).json({ error: 'company_id is required' });
-  if (!name?.trim()) return res.status(400).json({ error: 'Item name is required' });
-  if (quantity < 0) return res.status(400).json({ error: 'Quantity cannot be negative' });
-  if (unit_price < 0) return res.status(400).json({ error: 'Unit price cannot be negative' });
+router.post('/', asyncHandler(async (req, res) => {
+  // A company admin may omit company_id, but never name another company.
+  const companyId = resolveCompanyId(req, req.body.company_id);
+  const item      = readBody(req.body);
 
-  const db = getDB();
-  try {
-    const result = db.prepare(`
-      INSERT INTO items (company_id, name, sku, unit, quantity, unit_price, low_stock_threshold)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      company_id,
-      name.trim(),
-      sku?.trim() || null,
-      unit?.trim() || 'pcs',
-      parseFloat(quantity) || 0,
-      parseFloat(unit_price) || 0,
-      parseFloat(low_stock_threshold) || 10
-    );
-    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json(item);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to create item' });
-  }
-});
+  // Check the parent exists so a bad company_id reads as a bad request rather
+  // than a foreign-key failure.
+  const { rows: company } = await query('SELECT id FROM companies WHERE id = $1', [companyId]);
+  if (!company[0]) throw new NotFoundError('Company not found');
+
+  const { rows } = await query(
+    `INSERT INTO items (company_id, name, sku, unit, quantity, unit_price, low_stock_threshold)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING *`,
+    [companyId, item.name, item.sku, item.unit, item.quantity, item.unitPrice, item.threshold]
+  );
+  res.status(201).json(rows[0]);
+}));
 
 // PUT /api/items/:id
-router.put('/:id', (req, res) => {
-  const { name, sku, unit, quantity, unit_price, low_stock_threshold } = req.body;
-  if (!name?.trim()) return res.status(400).json({ error: 'Item name is required' });
+router.put('/:id', asyncHandler(async (req, res) => {
+  const id   = v.id(req.params.id, 'Item id');
+  const item = readBody(req.body);
 
-  const db = getDB();
-  try {
-    const info = db.prepare(`
-      UPDATE items
-      SET name=?, sku=?, unit=?, quantity=?, unit_price=?, low_stock_threshold=?
-      WHERE id=?
-    `).run(
-      name.trim(),
-      sku?.trim() || null,
-      unit?.trim() || 'pcs',
-      parseFloat(quantity) || 0,
-      parseFloat(unit_price) || 0,
-      parseFloat(low_stock_threshold) || 10,
-      req.params.id
-    );
-    if (info.changes === 0) return res.status(404).json({ error: 'Item not found' });
-    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id);
-    res.json(item);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to update item' });
-  }
-});
+  // The scope predicate means another tenant's item is simply not matched,
+  // so it cannot be edited and its existence is not revealed.
+  const { rows } = await query(
+    `UPDATE items
+     SET name = $1, sku = $2, unit = $3, quantity = $4, unit_price = $5, low_stock_threshold = $6
+     WHERE id = $7 AND ($8::int IS NULL OR company_id = $8)
+     RETURNING *`,
+    [item.name, item.sku, item.unit, item.quantity, item.unitPrice, item.threshold, id, companyScope(req)]
+  );
+  if (!rows[0]) throw new NotFoundError('Item not found');
+  res.json(rows[0]);
+}));
 
 // DELETE /api/items/:id
-router.delete('/:id', (req, res) => {
-  const db = getDB();
-  const info = db.prepare('DELETE FROM items WHERE id = ?').run(req.params.id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Item not found' });
+router.delete('/:id', asyncHandler(async (req, res) => {
+  const id = v.id(req.params.id, 'Item id');
+
+  const { rows: existing } = await query(
+    'SELECT name FROM items WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
+    [id, companyScope(req)]
+  );
+  if (!existing[0]) throw new NotFoundError('Item not found');
+
+  // An item that appears on an invoice cannot be removed without rewriting
+  // that invoice's history, so report the conflict rather than failing opaquely.
+  const { rows: refs } = await query(
+    `SELECT COUNT(DISTINCT invoice_id)::int AS count
+     FROM invoice_line_items
+     WHERE item_id = $1`,
+    [id]
+  );
+  if (refs[0].count > 0) {
+    const n = refs[0].count;
+    throw new ConflictError(
+      `Cannot delete "${existing[0].name}" — it appears on ${n} invoice${n === 1 ? '' : 's'}. ` +
+      `Set its quantity to 0 instead to take it out of circulation.`
+    );
+  }
+
+  await query('DELETE FROM items WHERE id = $1', [id]);
   res.json({ message: 'Item deleted successfully' });
-});
+}));
 
 module.exports = router;

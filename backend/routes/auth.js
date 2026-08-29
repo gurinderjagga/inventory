@@ -1,59 +1,111 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { getDB } = require('../database/db');
+const { query } = require('../database/db');
 const { authMiddleware, JWT_SECRET } = require('../middleware/auth');
+const { asyncHandler } = require('../middleware/asyncHandler');
+const { isProduction } = require('../config');
+const v = require('../lib/validate');
 
 const router = express.Router();
 
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: isProduction,
+  sameSite: 'strict',
+  path: '/',
+};
+
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-
-    const db = getDB();
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username.trim());
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid username or password' });
-    }
-
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) {
-      return res.status(401).json({ error: 'Invalid username or password' });
-    }
-
-    const token = jwt.sign(
-      { id: user.id, username: user.username },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000 // 24 hours
-    });
-
-    res.json({ message: 'Login successful', username: user.username });
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+router.post('/login', asyncHandler(async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
   }
-});
+
+  const { rows } = await query(
+    `SELECT u.*, c.name AS company_name
+     FROM users u
+     LEFT JOIN companies c ON c.id = u.company_id
+     WHERE u.username = $1`,
+    [username.trim()]
+  );
+  const user = rows[0];
+  if (!user) {
+    return res.status(401).json({ error: 'Invalid username or password' });
+  }
+
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) {
+    return res.status(401).json({ error: 'Invalid username or password' });
+  }
+
+  // Only the id goes in the token — role and company are read from the
+  // database on each request so privilege changes apply immediately.
+  const token = jwt.sign(
+    { id: user.id },
+    JWT_SECRET,
+    { expiresIn: '24h' }
+  );
+
+  res.cookie('token', token, { ...COOKIE_OPTIONS, maxAge: 24 * 60 * 60 * 1000 });
+  res.json({
+    message:      'Login successful',
+    id:           user.id,
+    username:     user.username,
+    role:         user.role,
+    company_id:   user.company_id,
+    company_name: user.company_name,
+  });
+}));
 
 // POST /api/auth/logout
 router.post('/logout', (req, res) => {
-  res.clearCookie('token');
+  // Options must match those used to set the cookie, or the browser keeps it.
+  res.clearCookie('token', COOKIE_OPTIONS);
   res.json({ message: 'Logged out successfully' });
 });
 
-// GET /api/auth/me  — verify session
+// POST /api/auth/change-password  — any signed-in user, own account only
+router.post('/change-password', authMiddleware, asyncHandler(async (req, res) => {
+  const { current_password, new_password } = req.body;
+
+  if (!current_password) {
+    return res.status(400).json({ error: 'Your current password is required' });
+  }
+  const next = v.password(new_password, 'New password');
+
+  const { rows } = await query('SELECT password FROM users WHERE id = $1', [req.user.id]);
+  if (!rows[0]) {
+    return res.status(401).json({ error: 'Your account no longer exists — please log in again' });
+  }
+
+  // Requiring the current password stops someone with a stolen cookie from
+  // locking the real owner out of their account.
+  const valid = await bcrypt.compare(current_password, rows[0].password);
+  if (!valid) {
+    return res.status(400).json({ error: 'Your current password is not correct' });
+  }
+
+  if (current_password === next) {
+    return res.status(400).json({ error: 'The new password must be different from the current one' });
+  }
+
+  const hash = await bcrypt.hash(next, 12);
+  await query('UPDATE users SET password = $1 WHERE id = $2', [hash, req.user.id]);
+
+  res.json({ message: 'Password changed successfully' });
+}));
+
+// GET /api/auth/me  — verify session, and report role + tenant
 router.get('/me', authMiddleware, (req, res) => {
-  res.json({ id: req.user.id, username: req.user.username });
+  res.json({
+    id:           req.user.id,
+    username:     req.user.username,
+    role:         req.user.role,
+    company_id:   req.user.company_id,
+    company_name: req.user.company_name,
+  });
 });
 
 module.exports = router;

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api.js';
+import { api, isAuthError } from '../api.js';
+import { useAuth } from '../contexts/AuthContext.jsx';
 
 function KpiCard({ label, value, icon, accent }) {
   return (
@@ -15,7 +16,8 @@ function KpiCard({ label, value, icon, accent }) {
 }
 
 export default function Dashboard() {
-  const navigate = useNavigate();
+  const navigate  = useNavigate();
+  const { isAdmin } = useAuth();
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
@@ -30,7 +32,8 @@ export default function Dashboard() {
         ]);
         setData({ companies, stats, recent: invoices.slice(0, 8) });
       } catch (err) {
-        setError(err.message);
+        // Session expiry redirects to /login on its own; no error screen needed.
+        if (!isAuthError(err)) setError(err.message);
       } finally {
         setLoading(false);
       }
@@ -173,7 +176,11 @@ export default function Dashboard() {
               {[
                 { label: 'New Invoice',    icon: 'bi-plus-circle',    to: '/invoices' },
                 { label: 'Manage Stock',   icon: 'bi-box-seam',       to: '/stock'    },
-                { label: 'Add Company',    icon: 'bi-building-add',   to: '/companies'},
+                // Only a platform admin can add a company; for anyone else this
+                // linked to a page whose action the API refuses.
+                isAdmin
+                  ? { label: 'Add Company',  icon: 'bi-building-add', to: '/companies' }
+                  : { label: 'My Company',   icon: 'bi-building',     to: '/companies' },
               ].map(a => (
                 <button key={a.label} className="db-action-btn" onClick={() => navigate(a.to)}>
                   <i className={`bi ${a.icon}`} />

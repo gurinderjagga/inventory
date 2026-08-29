@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../api.js';
 
 const AuthContext = createContext(null);
@@ -24,7 +24,15 @@ export function AuthProvider({ children }) {
 
   const login = useCallback(async (username, password) => {
     const data = await api.login(username, password);
-    setUser({ username: data.username });
+    // Keep the same shape /me returns, so role and tenant are available
+    // whether the session came from a fresh login or a page reload.
+    setUser({
+      id:           data.id,
+      username:     data.username,
+      role:         data.role,
+      company_id:   data.company_id,
+      company_name: data.company_name,
+    });
     return data;
   }, []);
 
@@ -33,8 +41,19 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
+  // Stable so consumers can depend on it without re-running effects.
+  const value = useMemo(() => ({
+    user,
+    loading,
+    login,
+    logout,
+    // Convenience flag — the server is still the authority on every request;
+    // this only decides what the UI bothers to show.
+    isAdmin: user?.role === 'admin',
+  }), [user, loading, login, logout]);
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

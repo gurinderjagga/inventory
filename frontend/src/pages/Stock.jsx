@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '../api.js';
+import { api, isAuthError } from '../api.js';
 import { useToast } from '../contexts/ToastContext.jsx';
+import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 
@@ -9,6 +10,7 @@ const EMPTY_FORM = { name: '', sku: '', unit: 'pcs', quantity: '', unit_price: '
 
 export default function Stock() {
   const { toast }               = useToast();
+  const { isAdmin }            = useAuth();
   const [companies, setCompanies] = useState([]);
   const [selected, setSelected]   = useState(null);   // selected company
   const [items, setItems]         = useState([]);
@@ -21,26 +23,35 @@ export default function Stock() {
   const [saving, setSaving]       = useState(false);
   const [confirm, setConfirm]     = useState(null);
 
-  /* ── Load companies ────────────────────────────────── */
-  const loadCompanies = useCallback(async () => {
-    try {
-      const data = await api.getCompanies();
-      setCompanies(data);
-    } catch (e) { toast.error(e.message); }
-    finally { setLoadingComp(false); }
-  }, [toast]);
-
-  useEffect(() => { loadCompanies(); }, [loadCompanies]);
-
   /* ── Load items for selected company ──────────────── */
+  // Declared before loadCompanies, which calls it when auto-selecting.
   const loadItems = useCallback(async (company) => {
     setLoadingItems(true);
     try {
       const data = await api.getItems(company.id);
       setItems(data);
-    } catch (e) { toast.error(e.message); }
+    } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
     finally { setLoadingItems(false); }
   }, [toast]);
+
+  /* ── Load companies ────────────────────────────────── */
+  const loadCompanies = useCallback(async () => {
+    try {
+      const data = await api.getCompanies();
+      setCompanies(data);
+
+      // A company admin belongs to exactly one company, and the API returns
+      // only that one — asking them to choose from a list of one is pointless,
+      // so go straight to their stock.
+      if (!isAdmin && data.length === 1) {
+        setSelected(data[0]);
+        loadItems(data[0]);
+      }
+    } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
+    finally { setLoadingComp(false); }
+  }, [toast, isAdmin, loadItems]);
+
+  useEffect(() => { loadCompanies(); }, [loadCompanies]);
 
   const selectCompany = (company) => {
     setSelected(company);
@@ -102,12 +113,17 @@ export default function Stock() {
 
   const handleDelete = async () => {
     if (!confirm) return;
+    const { id, name } = confirm;
+    // Close first: an item that appears on an invoice cannot be deleted, and
+    // the dialog lingering made that refusal look like a broken button.
+    setConfirm(null);
     try {
-      await api.deleteItem(confirm.id);
-      toast.success(`"${confirm.name}" removed.`);
-      setConfirm(null);
+      await api.deleteItem(id);
+      toast.success(`"${name}" removed.`);
       loadItems(selected);
-    } catch (e) { toast.error(e.message); }
+    } catch (e) {
+      if (!isAuthError(e)) toast.error(e.message, 'Could not delete item');
+    }
   };
 
   const field = (key) => ({
@@ -174,14 +190,16 @@ export default function Stock() {
 
   return (
     <div className="page-enter">
-      {/* Breadcrumb */}
-      <div className="breadcrumb">
-        <button onClick={goBack} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, padding: 0 }}>
-          Stock
-        </button>
-        <i className="bi bi-chevron-right" style={{ fontSize: 10 }} />
-        <span className="current">{selected.name}</span>
-      </div>
+      {/* Breadcrumb — only meaningful when there is a company list to go back to */}
+      {isAdmin && (
+        <div className="breadcrumb">
+          <button onClick={goBack} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, padding: 0 }}>
+            Stock
+          </button>
+          <i className="bi bi-chevron-right" style={{ fontSize: 10 }} />
+          <span className="current">{selected.name}</span>
+        </div>
+      )}
 
       {/* Page header with actions */}
       <div className="page-header">
@@ -190,9 +208,11 @@ export default function Stock() {
           <p>{items.length} item{items.length !== 1 ? 's' : ''} in inventory</p>
         </div>
         <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
-          <button className="btn btn-secondary" onClick={goBack}>
-            <i className="bi bi-arrow-left" /> All Companies
-          </button>
+          {isAdmin && (
+            <button className="btn btn-secondary" onClick={goBack}>
+              <i className="bi bi-arrow-left" /> All Companies
+            </button>
+          )}
           <div className="search-wrap">
             <i className="bi bi-search" />
             <input placeholder="Search items…" value={search} onChange={e => setSearch(e.target.value)} />
@@ -300,7 +320,7 @@ export default function Stock() {
       </Modal>
 
       <ConfirmDialog isOpen={!!confirm} title="Delete Item"
-        message={`Remove <strong>${confirm?.name}</strong> from ${selected.name}'s inventory? This cannot be undone.`}
+        message={<>Remove <strong>{confirm?.name}</strong> from {selected.name}&rsquo;s inventory? This cannot be undone.</>}
         confirmText="Delete" danger
         onConfirm={handleDelete} onCancel={() => setConfirm(null)} />
     </div>

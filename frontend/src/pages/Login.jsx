@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
 
 export default function Login() {
-  const { login }       = useAuth();
+  const { login, user, loading: authLoading } = useAuth();
   const navigate        = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -27,6 +27,10 @@ export default function Login() {
       setLoading(false);
     }
   };
+
+  // Already signed in — send them to the app instead of showing a login form
+  // they do not need. Declared after every hook so hook order stays stable.
+  if (!authLoading && user) return <Navigate to="/" replace />;
 
   return (
     <div className="auth-wrapper">

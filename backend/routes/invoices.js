@@ -1,7 +1,11 @@
 const express = require('express');
 const PDFDocument = require('pdfkit');
-const { getDB, runTransaction } = require('../database/db');
+const { query, runTransaction } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
+const { asyncHandler } = require('../middleware/asyncHandler');
+const { companyScope, resolveCompanyId } = require('../middleware/authorize');
+const { ValidationError, NotFoundError, ConflictError } = require('../lib/errors');
+const v = require('../lib/validate');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -14,184 +18,241 @@ function generateInvoiceNo() {
 }
 
 // GET /api/invoices  — all invoices with company name
-router.get('/', (req, res) => {
-  const db = getDB();
-  const invoices = db.prepare(`
+router.get('/', asyncHandler(async (req, res) => {
+  const { rows } = await query(`
     SELECT i.*, c.name AS company_name
     FROM invoices i
     JOIN companies c ON c.id = i.company_id
+    WHERE ($1::int IS NULL OR i.company_id = $1)
     ORDER BY i.created_at DESC
-  `).all();
-  res.json(invoices);
-});
+  `, [companyScope(req)]);
+  res.json(rows);
+}));
 
 // GET /api/invoices/summary/stats  — dashboard summary (MUST be before /:id)
-router.get('/summary/stats', (req, res) => {
-  const db = getDB();
-  const totalInvoices = db.prepare("SELECT COUNT(*) AS count FROM invoices").get().count;
-  const totalRevenue  = db.prepare("SELECT COALESCE(SUM(total), 0) AS sum FROM invoices WHERE status = 'finalized'").get().sum;
-  const draftCount    = db.prepare("SELECT COUNT(*) AS count FROM invoices WHERE status = 'draft'").get().count;
-  res.json({ totalInvoices, totalRevenue, draftCount });
-});
+router.get('/summary/stats', asyncHandler(async (req, res) => {
+  const { rows } = await query(`
+    SELECT
+      COUNT(*)                                                               AS total_invoices,
+      COALESCE(SUM(CASE WHEN status = 'finalized' THEN total ELSE 0 END), 0) AS total_revenue,
+      COUNT(*) FILTER (WHERE status = 'draft')                               AS draft_count
+    FROM invoices
+    WHERE ($1::int IS NULL OR company_id = $1)
+  `, [companyScope(req)]);
+  const r = rows[0];
+  res.json({
+    totalInvoices: Number(r.total_invoices),
+    totalRevenue:  Number(r.total_revenue),
+    draftCount:    Number(r.draft_count),
+  });
+}));
 
 // GET /api/invoices/:id  — invoice + line items
-router.get('/:id', (req, res) => {
-  const db = getDB();
-  const invoice = db.prepare(`
+router.get('/:id', asyncHandler(async (req, res) => {
+  const id = v.id(req.params.id, 'Invoice id');
+
+  const { rows } = await query(`
     SELECT i.*, c.name AS company_name, c.email AS company_email,
            c.phone AS company_phone, c.address AS company_address
     FROM invoices i
     JOIN companies c ON c.id = i.company_id
-    WHERE i.id = ?
-  `).get(req.params.id);
+    WHERE i.id = $1 AND ($2::int IS NULL OR i.company_id = $2)
+  `, [id, companyScope(req)]);
 
-  if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
-  invoice.line_items = db.prepare(
-    'SELECT * FROM invoice_line_items WHERE invoice_id = ? ORDER BY id'
-  ).all(req.params.id);
+  const invoice = rows[0];
+  if (!invoice) throw new NotFoundError('Invoice not found');
+
+  const lines = await query(
+    'SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY id',
+    [id]
+  );
+  invoice.line_items = lines.rows;
 
   res.json(invoice);
-});
+}));
 
 // POST /api/invoices  — create draft invoice (atomic via transaction)
-router.post('/', (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { company_id, customer_name, customer_email, notes, tax_rate, line_items } = req.body;
 
-  if (!company_id) return res.status(400).json({ error: 'company_id is required' });
-  if (!customer_name?.trim()) return res.status(400).json({ error: 'customer_name is required' });
+  // A company admin may omit company_id, but never name another company.
+  const companyId   = resolveCompanyId(req, company_id);
+  const customerNm  = v.requiredString(customer_name, 'customer_name');
+  const taxRate     = v.nonNegativeNumber(tax_rate, 'Tax rate', { fallback: 0 });
+
   if (!Array.isArray(line_items) || line_items.length === 0) {
-    return res.status(400).json({ error: 'At least one line item is required' });
+    throw new ValidationError('At least one line item is required');
   }
 
-  const db = getDB();
-  const invoice_no = generateInvoiceNo();
-  const taxRate = parseFloat(tax_rate) || 0;
+  // Normalise and validate every line before touching the database, so a bad
+  // line is reported as a bad request instead of a foreign-key failure.
+  const lines = line_items.map((li, idx) => {
+    const label = `Line ${idx + 1}`;
+    const qty   = v.nonNegativeNumber(li.quantity,   `${label} quantity`);
+    if (qty <= 0) throw new ValidationError(`${label} quantity must be greater than 0`);
+    return {
+      itemId:    v.id(li.item_id, `${label} item_id`),
+      itemName:  li.item_name,
+      quantity:  qty,
+      unitPrice: v.nonNegativeNumber(li.unit_price, `${label} unit price`, { fallback: 0 }),
+    };
+  });
 
-  let subtotal = 0;
-  for (const li of line_items) {
-    if (!li.item_id || li.quantity <= 0) {
-      return res.status(400).json({ error: 'Each line item needs a valid item_id and quantity > 0' });
+  const { rows: company } = await query('SELECT id FROM companies WHERE id = $1', [companyId]);
+  if (!company[0]) throw new NotFoundError('Company not found');
+
+  // Confirm every referenced item exists AND belongs to the invoice's company,
+  // and use the stored name so a client cannot mislabel a line.
+  //
+  // The company_id filter matters twice over: it stops one tenant billing
+  // another tenant's stock, and it stops an invoice mixing items across
+  // companies, which would make the stock deduction on finalize incoherent.
+  const ids = [...new Set(lines.map(l => l.itemId))];
+  const { rows: found } = await query(
+    'SELECT id, name FROM items WHERE id = ANY($1::int[]) AND company_id = $2',
+    [ids, companyId]
+  );
+  const nameById = new Map(found.map(r => [r.id, r.name]));
+  const missing  = ids.filter(id => !nameById.has(id));
+  if (missing.length) {
+    throw new ValidationError(
+      `No such item${missing.length === 1 ? '' : 's'} for this company: ${missing.join(', ')}`
+    );
+  }
+
+  const subtotal = lines.reduce((sum, l) => sum + l.quantity * l.unitPrice, 0);
+  const total    = subtotal + subtotal * (taxRate / 100);
+
+  const invoice = await runTransaction(async (client) => {
+    const { rows } = await client.query(
+      `INSERT INTO invoices (invoice_no, company_id, customer_name, customer_email, notes, subtotal, tax_rate, total, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft')
+       RETURNING *`,
+      [
+        generateInvoiceNo(), companyId, customerNm,
+        v.optionalString(customer_email), v.optionalString(notes),
+        subtotal, taxRate, total,
+      ]
+    );
+    const created = rows[0];
+
+    for (const l of lines) {
+      await client.query(
+        `INSERT INTO invoice_line_items (invoice_id, item_id, item_name, quantity, unit_price, line_total)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [created.id, l.itemId, nameById.get(l.itemId), l.quantity, l.unitPrice, l.quantity * l.unitPrice]
+      );
     }
-    subtotal += parseFloat(li.quantity) * parseFloat(li.unit_price);
-  }
-  const tax   = subtotal * (taxRate / 100);
-  const total = subtotal + tax;
 
-  try {
-    const invoiceId = runTransaction(() => {
-      const result = db.prepare(`
-        INSERT INTO invoices (invoice_no, company_id, customer_name, customer_email, notes, subtotal, tax_rate, total, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')
-      `).run(invoice_no, company_id, customer_name.trim(), customer_email || null, notes || null, subtotal, taxRate, total);
+    return created;
+  });
 
-      const insertLine = db.prepare(`
-        INSERT INTO invoice_line_items (invoice_id, item_id, item_name, quantity, unit_price, line_total)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-
-      for (const li of line_items) {
-        insertLine.run(
-          result.lastInsertRowid,
-          li.item_id,
-          li.item_name,
-          parseFloat(li.quantity),
-          parseFloat(li.unit_price),
-          parseFloat(li.quantity) * parseFloat(li.unit_price)
-        );
-      }
-
-      return result.lastInsertRowid;
-    });
-
-    const invoice = db.prepare('SELECT * FROM invoices WHERE id = ?').get(invoiceId);
-    res.status(201).json(invoice);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to create invoice' });
-  }
-});
+  res.status(201).json(invoice);
+}));
 
 // POST /api/invoices/:id/finalize  — atomic stock deduction
-router.post('/:id/finalize', (req, res) => {
-  const db = getDB();
-  const invoice = db.prepare('SELECT * FROM invoices WHERE id = ?').get(req.params.id);
+router.post('/:id/finalize', asyncHandler(async (req, res) => {
+  const id = v.id(req.params.id, 'Invoice id');
 
-  if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
-  if (invoice.status === 'finalized') {
-    return res.status(400).json({ error: 'This invoice has already been finalized' });
-  }
+  // Any error thrown inside runTransaction rolls the whole thing back, so a
+  // partial stock deduction is not possible. Typed errors become 4xx; anything
+  // unexpected reaches the global handler as a 500.
+  const updated = await runTransaction(async (client) => {
+    // Re-read under a row lock so two concurrent finalize requests cannot both
+    // pass the status check and deduct stock twice.
+    const { rows: invRows } = await client.query(
+      'SELECT * FROM invoices WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) FOR UPDATE',
+      [id, companyScope(req)]
+    );
+    const invoice = invRows[0];
+    if (!invoice) throw new NotFoundError('Invoice not found');
+    if (invoice.status === 'finalized') {
+      throw new ConflictError('This invoice has already been finalized');
+    }
 
-  const lineItems = db.prepare(
-    'SELECT * FROM invoice_line_items WHERE invoice_id = ?'
-  ).all(req.params.id);
+    const { rows: lineItems } = await client.query(
+      'SELECT * FROM invoice_line_items WHERE invoice_id = $1',
+      [id]
+    );
+    if (lineItems.length === 0) {
+      throw new ValidationError('Invoice has no line items');
+    }
 
-  if (lineItems.length === 0) {
-    return res.status(400).json({ error: 'Invoice has no line items' });
-  }
+    for (const line of lineItems) {
+      // Atomically deduct — only updates if stock is sufficient.
+      const { rowCount } = await client.query(
+        `UPDATE items
+         SET quantity = quantity - $1
+         WHERE id = $2 AND quantity >= $3`,
+        [line.quantity, line.item_id, line.quantity]
+      );
 
-  try {
-    // runTransaction rolls back automatically if ANY error is thrown
-    const updated = runTransaction(() => {
-      for (const line of lineItems) {
-        // Atomically deduct — only updates if stock is sufficient
-        const result = db.prepare(`
-          UPDATE items
-          SET quantity = quantity - ?
-          WHERE id = ? AND quantity >= ?
-        `).run(line.quantity, line.item_id, line.quantity);
-
-        if (result.changes === 0) {
-          const item = db.prepare('SELECT name, quantity FROM items WHERE id = ?').get(line.item_id);
-          const available = item ? item.quantity : 0;
-          throw new Error(
-            `Insufficient stock for "${item?.name || 'unknown item'}". ` +
-            `Available: ${available}, Requested: ${line.quantity}`
-          );
-        }
+      if (rowCount === 0) {
+        const { rows } = await client.query(
+          'SELECT name, quantity FROM items WHERE id = $1',
+          [line.item_id]
+        );
+        const item = rows[0];
+        throw new ConflictError(
+          `Insufficient stock for "${item?.name || 'unknown item'}". ` +
+          `Available: ${item ? item.quantity : 0}, Requested: ${line.quantity}`
+        );
       }
+    }
 
-      db.prepare("UPDATE invoices SET status = 'finalized' WHERE id = ?").run(req.params.id);
-      return db.prepare('SELECT * FROM invoices WHERE id = ?').get(req.params.id);
-    });
+    const { rows } = await client.query(
+      `UPDATE invoices SET status = 'finalized' WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    return rows[0];
+  });
 
-    res.json({ message: 'Invoice finalized and stock deducted successfully', invoice: updated });
-  } catch (err) {
-    // Transaction was rolled back — stock is unchanged
-    res.status(400).json({ error: err.message });
-  }
-});
+  res.json({ message: 'Invoice finalized and stock deducted successfully', invoice: updated });
+}));
 
 // DELETE /api/invoices/:id  — only drafts can be deleted
-router.delete('/:id', (req, res) => {
-  const db = getDB();
-  const invoice = db.prepare('SELECT status FROM invoices WHERE id = ?').get(req.params.id);
-  if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+router.delete('/:id', asyncHandler(async (req, res) => {
+  const id = v.id(req.params.id, 'Invoice id');
+
+  const { rows } = await query(
+    'SELECT status FROM invoices WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
+    [id, companyScope(req)]
+  );
+  const invoice = rows[0];
+  if (!invoice) throw new NotFoundError('Invoice not found');
   if (invoice.status === 'finalized') {
-    return res.status(400).json({ error: 'Finalized invoices cannot be deleted' });
+    throw new ConflictError(
+      'Finalized invoices cannot be deleted — they are part of your financial record.'
+    );
   }
-  db.prepare('DELETE FROM invoices WHERE id = ?').run(req.params.id);
+  await query('DELETE FROM invoices WHERE id = $1', [id]);
   res.json({ message: 'Invoice deleted' });
-});
+}));
 
 // GET /api/invoices/:id/pdf  — stream PDF download
-router.get('/:id/pdf', (req, res) => {
-  const db = getDB();
-  const invoice = db.prepare(`
+router.get('/:id/pdf', asyncHandler(async (req, res) => {
+  const id = v.id(req.params.id, 'Invoice id');
+
+  const { rows } = await query(`
     SELECT i.*, c.name AS company_name, c.email AS company_email,
            c.phone AS company_phone, c.address AS company_address
     FROM invoices i
     JOIN companies c ON c.id = i.company_id
-    WHERE i.id = ?
-  `).get(req.params.id);
+    WHERE i.id = $1 AND ($2::int IS NULL OR i.company_id = $2)
+  `, [id, companyScope(req)]);
 
-  if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
-  const lineItems = db.prepare(
-    'SELECT * FROM invoice_line_items WHERE invoice_id = ? ORDER BY id'
-  ).all(req.params.id);
+  const invoice = rows[0];
+  if (!invoice) throw new NotFoundError('Invoice not found');
+
+  const { rows: lineItems } = await query(
+    'SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY id',
+    [id]
+  );
 
   const doc = new PDFDocument({ margin: 50, size: 'A4' });
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="${invoice.invoice_no}.pdf"`);
+  // "attachment" so the browser saves the file, matching the UI's Download button.
+  res.setHeader('Content-Disposition', `attachment; filename="${invoice.invoice_no}.pdf"`);
   doc.pipe(res);
 
   // ── Header ──────────────────────────────────────────────
@@ -266,6 +327,6 @@ router.get('/:id/pdf', (req, res) => {
   }
 
   doc.end();
-});
+}));
 
 module.exports = router;

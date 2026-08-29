@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "description": "Company-wise inventory management and invoicing system",
   "scripts": {
-    "start": "cd backend && npm start",
-    "dev:api": "cd backend && nodemon --exec \"node --no-warnings\" server.js",
-    "dev:client": "cd frontend && npm run dev",
-    "dev": "concurrently \"npm run dev:api\" \"npm run dev:client\"",
-    "build": "cd frontend && npm run build",
-    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install"
+    "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend",
+    "seed": "npm run seed --prefix backend",
+    "dev:api": "npm run dev --prefix backend",
+    "dev:client": "npm run dev --prefix frontend",
+    "dev": "concurrently --names \"api,web\" --prefix-colors \"blue,magenta\" \"npm:dev:api\" \"npm:dev:client\"",
+    "build": "npm run build --prefix frontend",
+    "start": "npm start --prefix backend"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^9.2.4"
   }
 }

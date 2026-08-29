@@ -2,7 +2,15 @@ import Modal from './Modal.jsx';
 
 /**
  * Confirm dialog modal.
- * Props: isOpen, title, message (HTML string), confirmText, danger, onConfirm, onCancel
+ *
+ * `message` is a React node, not an HTML string. It used to be injected with
+ * dangerouslySetInnerHTML while callers interpolated company and item names
+ * straight into it, so a record named `<img src=x onerror=…>` would execute
+ * its payload the moment someone opened the delete dialog. Rendering the node
+ * as children lets React escape the text and keeps the markup callers actually
+ * intend (e.g. <strong>) working.
+ *
+ * Props: isOpen, title, message (ReactNode), confirmText, danger, onConfirm, onCancel
  */
 export default function ConfirmDialog({
   isOpen,
@@ -30,10 +38,9 @@ export default function ConfirmDialog({
         </>
       }
     >
-      <p
-        style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.7 }}
-        dangerouslySetInnerHTML={{ __html: message }}
-      />
+      <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.7 }}>
+        {message}
+      </p>
     </Modal>
   );
 }
