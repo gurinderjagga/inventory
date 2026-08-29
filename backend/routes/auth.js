@@ -4,15 +4,19 @@ const jwt = require('jsonwebtoken');
 const { query } = require('../database/db');
 const { authMiddleware, JWT_SECRET } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
-const { isProduction } = require('../config');
+const { COOKIE_SAMESITE, COOKIE_SECURE } = require('../config');
 const v = require('../lib/validate');
 
 const router = express.Router();
 
+// SameSite/Secure are derived from whether the frontend is on another origin.
+// Same-origin: Lax, which blocks the cross-site requests that drive CSRF.
+// Cross-origin: None + Secure, the only combination browsers will send
+// cross-site — see the CSRF note in server.js for what compensates.
 const COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: isProduction,
-  sameSite: 'strict',
+  secure: COOKIE_SECURE,
+  sameSite: COOKIE_SAMESITE,
   path: '/',
 };
 

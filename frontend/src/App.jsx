@@ -1,17 +1,17 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './contexts/AuthContext.jsx';
-import { ToastProvider } from './contexts/ToastContext.jsx';
-import Layout from './components/Layout.jsx';
-import Login from './pages/Login.jsx';
-import Dashboard from './pages/Dashboard.jsx';
-import Companies from './pages/Companies.jsx';
-import Stock from './pages/Stock.jsx';
-import Invoices from './pages/Invoices.jsx';
-import Users from './pages/Users.jsx';
+import { Routes, Route, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "./contexts/AuthContext.jsx";
+import { ToastProvider } from "./contexts/ToastContext.jsx";
+import Layout from "./components/Layout.jsx";
+import Login from "./pages/Login.jsx";
+import Dashboard from "./pages/Dashboard.jsx";
+import Companies from "./pages/Companies.jsx";
+import Stock from "./pages/Stock.jsx";
+import Invoices from "./pages/Invoices.jsx";
+import Users from "./pages/Users.jsx";
 
 function LoadingPage() {
   return (
-    <div className="loading-page" style={{ height: '100vh' }}>
+    <div className="loading-page" style={{ height: "100vh" }}>
       <div className="spinner" />
       <span>Loading…</span>
     </div>
@@ -51,11 +51,18 @@ export default function App() {
 
           {/* All authenticated pages rendered inside the Layout shell */}
           <Route element={<ProtectedLayout />}>
-            <Route path="/"          element={<Dashboard />} />
+            <Route path="/" element={<Dashboard />} />
             <Route path="/companies" element={<Companies />} />
-            <Route path="/stock"     element={<Stock />} />
-            <Route path="/invoices"  element={<Invoices />} />
-            <Route path="/users"     element={<AdminOnly><Users /></AdminOnly>} />
+            <Route path="/stock" element={<Stock />} />
+            <Route path="/invoices" element={<Invoices />} />
+            <Route
+              path="/users"
+              element={
+                <AdminOnly>
+                  <Users />
+                </AdminOnly>
+              }
+            />
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -1,5 +1,6 @@
 const config     = require('./config');   // must load first — populates process.env
 const express    = require('express');
+const cors       = require('cors');
 const cookieParser = require('cookie-parser');
 const path       = require('path');
 const fs         = require('fs');
@@ -9,9 +10,40 @@ const { ensureAdminUser, DEFAULT_ADMIN } = require('./database/seed');
 const app  = express();
 const PORT = config.PORT;
 
+// ── CORS ─────────────────────────────────────────────────────
+// Only mounted when the frontend lives on another origin. `credentials: true`
+// is what lets the browser send the session cookie; it cannot be combined with
+// a wildcard origin, hence the explicit allowlist.
+if (config.isCrossSite) {
+  app.use(cors({
+    origin(origin, callback) {
+      // No Origin header: same-origin navigations, curl, health checks.
+      if (!origin) return callback(null, true);
+      if (config.CORS_ORIGINS.includes(origin.replace(/\/$/, ''))) {
+        return callback(null, true);
+      }
+      // Reject without throwing: the request proceeds without CORS headers,
+      // so the browser blocks it and the log stays quiet under scanning.
+      return callback(null, false);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+  }));
+  console.log(`🔓  CORS enabled for: ${config.CORS_ORIGINS.join(', ')}`);
+}
+
 // ── Global Middleware ────────────────────────────────────────
+// JSON only, deliberately.
+//
+// With SameSite=None the cookie rides along on cross-site requests, so CSRF
+// becomes a live concern. A cross-site <form> can only send url-encoded,
+// multipart, or plain-text bodies, and those are "simple requests" that browsers
+// fire WITHOUT a preflight — meaning CORS never gets the chance to block them.
+// Accepting application/json only forces a preflight on every state-changing
+// call, which the allowlist above then rejects. Re-adding express.urlencoded
+// would reopen that hole; nothing here posts form bodies.
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // ── API Routes ───────────────────────────────────────────────

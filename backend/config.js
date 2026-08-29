@@ -45,10 +45,40 @@ if (!JWT_SECRET) {
   fatal('JWT_SECRET is still the development default.', 'Set a unique secret before deploying.');
 }
 
+// ── Cross-origin ─────────────────────────────────────────────
+// Set CORS_ORIGIN when the frontend is served from a different domain than the
+// API (e.g. two separate Vercel projects). Comma-separated for multiple, which
+// you will need if you want Vercel preview deployments to work as well as
+// production. Leave it unset when both are behind one origin — that is the
+// safer arrangement and needs no CORS at all.
+const CORS_ORIGINS = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map(s => s.trim().replace(/\/$/, ''))   // tolerate a trailing slash
+  .filter(Boolean);
+
+// Any allowed origin means the session cookie travels cross-site, which forces
+// SameSite=None — and browsers reject SameSite=None unless Secure is also set,
+// so this combination only works over HTTPS.
+const isCrossSite = CORS_ORIGINS.length > 0;
+
+if (isProduction && !isCrossSite) {
+  console.warn(
+    '⚠️   CORS_ORIGIN is not set. This is correct only if the frontend is served\n' +
+    '    from this same origin. If it is on its own domain, browsers will block\n' +
+    '    every API call.'
+  );
+}
+
 module.exports = {
   NODE_ENV,
   isProduction,
   PORT: Number(process.env.PORT) || 3000,
   DATABASE_URL,
   JWT_SECRET,
+  CORS_ORIGINS,
+  isCrossSite,
+  // SameSite=None is required to send the cookie cross-site; Lax is kept for
+  // the same-origin dev setup, where the Vite proxy makes everything one host.
+  COOKIE_SAMESITE: isCrossSite ? 'none' : 'lax',
+  COOKIE_SECURE:   isCrossSite || isProduction,
 };
