@@ -87,36 +87,29 @@ Change this before exposing the app to anyone.
 
 ---
 
-## Roles
+## Accounts
 
-There are two roles.
+Companies are records whose stock we manage on their behalf — they are not
+tenants and they do not sign in. Everyone who can sign in is staff, and every
+account has the same access: all companies, all stock, all invoices, and the
+ability to manage other accounts.
 
-| | Platform admin (`admin`) | Company admin (`company_admin`) |
-| --- | --- | --- |
-| Belongs to a company | No (`company_id` is `NULL`) | Exactly one, required |
-| See / edit companies | All of them | Only its own, and cannot delete it |
-| Create or delete companies | Yes | No — `403` |
-| Stock and invoices | Any company's | Only its own company's |
-| Manage user accounts | Yes | No — `403` |
+There is no role and no per-company scoping. `users` holds only `id`,
+`username`, `password` and `created_at`.
 
-**Tenant isolation.** A company admin reaching for another company's record gets
-`404`, not `403` — answering `403` would confirm the record exists. Scoping is
-applied inside each SQL query rather than as a separate check, so there is no
-code path that reads a row before authorising it.
-
-**Role changes take effect immediately.** The session cookie carries only the
-user id; role and company are read from the database on every request. Demoting
-or deleting an account applies on its very next request rather than whenever its
-token would have expired.
+**Account changes take effect immediately.** The session cookie carries only the
+user id; the account is read from the database on every request, so deleting one
+applies on its very next request rather than whenever its token would have
+expired.
 
 ### Managing accounts
 
-The platform admin provisions accounts — there is no self-signup.
+Accounts are provisioned from inside the app — there is no self-signup.
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/users` | List accounts (never returns password hashes) |
-| `POST /api/users` | Create an account: `username`, `password`, `role`, `company_id` |
+| `POST /api/users` | Create an account: `username`, `password` |
 | `PUT /api/users/:id` | Update; omit `password` to leave it unchanged |
 | `DELETE /api/users/:id` | Remove an account |
 | `POST /api/auth/change-password` | Any user changes their own password |
@@ -124,24 +117,11 @@ The platform admin provisions accounts — there is no self-signup.
 Passwords must be at least 8 characters and at most 72 bytes — bcrypt ignores
 anything beyond 72, so longer values are rejected rather than silently truncated.
 
-Two guards prevent locking yourself out: you cannot delete the account you are
-signed in with, and you cannot delete or demote the last remaining platform
-admin.
+Two guards prevent locking everyone out: you cannot delete the account you are
+signed in with, and you cannot delete the last remaining account.
 
-Deleting a company also deletes its company-admin logins, which have no meaning
-without it. Companies that already have invoices cannot be deleted at all.
-
-### Demo accounts
-
-`npm run seed` creates one company admin per sample company:
-
-```
-techcorp_admin    / demo1234   → TechCorp Supplies
-globalelec_admin  / demo1234   → Global Electronics
-officeess_admin   / demo1234   → Office Essentials
-```
-
-Remove or change these before deploying.
+Deleting a company also deletes its stock items. Companies that already have
+invoices cannot be deleted at all.
 
 ---
 

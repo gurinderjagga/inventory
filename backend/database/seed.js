@@ -1,5 +1,5 @@
 /**
- * Seeder — creates the admin user plus sample companies and items.
+ * Seeder — creates the staff account plus sample companies and items.
  * Run: npm run seed        (from the backend/ directory, or `npm run seed` at the repo root)
  *
  * Every step is idempotent, so re-running it will not duplicate rows.
@@ -20,11 +20,8 @@ async function ensureAdminUser() {
   if (rows[0].count > 0) return false;
 
   const hash = await bcrypt.hash(DEFAULT_ADMIN.password, 12);
-  // role is stated explicitly: the column has no default, and a platform
-  // admin must have company_id NULL to satisfy users_scope_ck.
   await query(
-    `INSERT INTO users (username, password, role, company_id)
-     VALUES ($1, $2, 'admin', NULL)`,
+    'INSERT INTO users (username, password) VALUES ($1, $2)',
     [DEFAULT_ADMIN.username, hash]
   );
   return true;
@@ -54,45 +51,14 @@ const ITEMS = [
   { company: 'Office Essentials',  name: 'Sticky Notes (3×3, 12pk)',   sku: 'OE-004', unit: 'packs', quantity: 9,   unit_price: 7.49,   low_stock_threshold: 12 },
 ];
 
-// Demo company-admin logins, one per sample company, so tenant scoping can be
-// exercised without hand-provisioning accounts. Demo data only — same status as
-// the sample companies below, and not intended for a real deployment.
-const DEMO_PASSWORD = 'demo1234';
-const DEMO_COMPANY_ADMINS = [
-  { username: 'techcorp_admin',   company: 'TechCorp Supplies'  },
-  { username: 'globalelec_admin', company: 'Global Electronics' },
-  { username: 'officeess_admin',  company: 'Office Essentials'  },
-];
-
-/** Create the demo company-admin accounts, skipping any that already exist. */
-async function ensureDemoCompanyAdmins() {
-  const hash = await bcrypt.hash(DEMO_PASSWORD, 12);
-  let created = 0;
-
-  for (const a of DEMO_COMPANY_ADMINS) {
-    // Resolve the company by name and skip if the username is taken, so the
-    // whole statement is a no-op on re-run.
-    const { rowCount } = await query(
-      `INSERT INTO users (username, password, role, company_id)
-       SELECT $1, $2, 'company_admin', c.id
-       FROM companies c
-       WHERE c.name = $3
-         AND NOT EXISTS (SELECT 1 FROM users WHERE username = $1)`,
-      [a.username, hash, a.company]
-    );
-    created += rowCount;
-  }
-  return created;
-}
-
 async function seed() {
   await initDB();
 
-  // ── Admin User ─────────────────────────────────────────────
+  // ── Staff account ──────────────────────────────────────────
   if (await ensureAdminUser()) {
-    console.log(`✅ Admin user created  →  ${DEFAULT_ADMIN.username} / ${DEFAULT_ADMIN.password}`);
+    console.log(`✅ Staff account created  →  ${DEFAULT_ADMIN.username} / ${DEFAULT_ADMIN.password}`);
   } else {
-    console.log('ℹ️  Admin user already exists');
+    console.log('ℹ️  Staff account already exists');
   }
 
   // ── Companies ──────────────────────────────────────────────
@@ -121,21 +87,11 @@ async function seed() {
   }
   console.log('✅ Sample items created');
 
-  // Must run after the companies exist, since each account is tied to one.
-  const adminsCreated = await ensureDemoCompanyAdmins();
-  console.log(adminsCreated > 0
-    ? `✅ ${adminsCreated} demo company admin${adminsCreated === 1 ? '' : 's'} created`
-    : 'ℹ️  Demo company admins already exist');
-
   console.log('\n🎉  Seed complete!');
   console.log('────────────────────────────────────────────────');
-  console.log(`   Platform admin : ${DEFAULT_ADMIN.username} / ${DEFAULT_ADMIN.password}`);
-  console.log('   Company admins :');
-  for (const a of DEMO_COMPANY_ADMINS) {
-    console.log(`     ${a.username.padEnd(18)} / ${DEMO_PASSWORD}   → ${a.company}`);
-  }
+  console.log(`   Sign in : ${DEFAULT_ADMIN.username} / ${DEFAULT_ADMIN.password}`);
   console.log('────────────────────────────────────────────────');
-  console.log('   Demo credentials — change or remove before deploying.\n');
+  console.log('   Demo credentials — change before deploying.\n');
 }
 
 module.exports = { seed, ensureAdminUser, DEFAULT_ADMIN };

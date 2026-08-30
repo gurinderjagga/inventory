@@ -4,7 +4,7 @@
  * VITE_API_URL points at the backend when it is deployed on its own domain
  * (e.g. https://inventory-backend.vercel.app). Leave it unset to use relative
  * paths, which is right both for local development — where the Vite proxy
- * forwards /api to localhost:3000 — and for a single-origin deployment.
+ * forwards /api to localhost:5001 — and for a single-origin deployment.
  *
  * Vite inlines this at BUILD time, not runtime: changing it on the host means
  * redeploying the frontend, not just restarting it.
@@ -85,6 +85,7 @@ export const api = {
   getInvoices: () => request('GET', '/api/invoices'),
   getInvoice: (id) => request('GET', `/api/invoices/${id}`),
   createInvoice: (d) => request('POST', '/api/invoices', d),
+  updateInvoice: (id, d) => request('PUT', `/api/invoices/${id}`, d),
   finalizeInvoice: (id) => request('POST', `/api/invoices/${id}/finalize`),
   deleteInvoice: (id) => request('DELETE', `/api/invoices/${id}`),
   getInvoiceStats: () => request('GET', '/api/invoices/summary/stats'),

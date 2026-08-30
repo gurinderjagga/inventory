@@ -26,6 +26,27 @@ export function formatCurrency(value) {
 }
 
 /**
+ * Dates, in one format everywhere.
+ *
+ * The dashboard used to render "Aug 30" (en-US) while the tables beside it
+ * rendered "30 Aug 2026" (en-IN) — the same records in two formats, one screen
+ * apart. Everything goes through here now.
+ *
+ * @param {string|Date} value
+ * @param {{short?: boolean}} [opts]  short omits the year, for dense cells
+ * @returns {string} e.g. "30 Aug 2026", or "30 Aug" when short
+ */
+export function formatDate(value, { short = false } = {}) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    ...(short ? {} : { year: 'numeric' }),
+  });
+}
+
+/**
  * Rupees with no paise — for dense card stats where two decimals are noise.
  * @param {number|string} value
  * @returns {string} e.g. "₹1,235"

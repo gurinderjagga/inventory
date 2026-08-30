@@ -126,56 +126,52 @@ async function initDB() {
 }
 
 /**
- * Additive schema changes applied after the base tables exist.
- *
- * `users.role` and `users.company_id` are defined ONLY here rather than in the
- * CREATE TABLE above, so there is a single definition path — a fresh database
- * and an existing one end up with byte-identical structure instead of drifting.
+ * Schema changes applied after the base tables exist.
  *
  * Every statement is idempotent and safe to run on every boot. This is a
  * deliberate stopgap, not a migration system: once schema changes get more
- * involved than adding columns, move to a real tool (node-pg-migrate or
- * similar) rather than growing this function.
+ * involved than this, move to a real tool (node-pg-migrate or similar) rather
+ * than growing this function.
  */
 async function applySchemaUpdates() {
-  // Multi-tenancy: which role a user holds, and which company they belong to.
-  // Deleting a company removes its company-admin logins, which have no meaning
-  // without it. Companies with invoices already cannot be deleted.
-  await pool.query(`
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS company_id INTEGER
-      REFERENCES companies(id) ON DELETE CASCADE;
-  `);
-
-  // Any account predating roles is the original platform administrator.
-  await pool.query(`UPDATE users SET role = 'admin' WHERE role IS NULL`);
-
-  // No DEFAULT on purpose: every insert must state the role explicitly, so a
-  // company admin can never be created without a company by omission.
-  await pool.query(`ALTER TABLE users ALTER COLUMN role SET NOT NULL`);
-
-  // Postgres has no ADD CONSTRAINT IF NOT EXISTS, hence the catalogue check.
-  await addConstraint('users_role_ck', `CHECK (role IN ('admin', 'company_admin'))`);
-  await addConstraint('users_scope_ck', `CHECK (
-    (role = 'admin'         AND company_id IS NULL) OR
-    (role = 'company_admin' AND company_id IS NOT NULL)
-  )`);
-
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_company ON users(company_id)`);
+  await dropTenantLogins();
 }
 
-/** Add a named table constraint only if it is not already present. */
-async function addConstraint(name, definition) {
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = '${name}'
-      ) THEN
-        ALTER TABLE users ADD CONSTRAINT ${name} ${definition};
-      END IF;
-    END $$;
+/**
+ * Retire the company-admin role.
+ *
+ * Companies are records whose stock we manage on their behalf — they are not
+ * tenants who log in. `users.role` and `users.company_id` existed only to scope
+ * a company admin to their own company, so both go, along with every account
+ * that held that role.
+ *
+ * Runs on every boot and does nothing once applied. Deleting rows from a schema
+ * step is not something to do lightly, so it is deliberately narrow: it fires
+ * only while the `role` column still exists, and only for that one value.
+ */
+async function dropTenantLogins() {
+  const { rows } = await pool.query(`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users' AND column_name = 'role'
   `);
+  if (!rows.length) return;   // already migrated
+
+  // The CHECK constraints reference the columns, so they must go first.
+  await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_scope_ck`);
+  await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_ck`);
+
+  const { rowCount } = await pool.query(`DELETE FROM users WHERE role = 'company_admin'`);
+  if (rowCount > 0) {
+    console.log(`↪  Removed ${rowCount} company-admin login${rowCount === 1 ? '' : 's'} — companies no longer sign in`);
+  }
+
+  await pool.query(`DROP INDEX IF EXISTS idx_users_company`);
+  await pool.query(`
+    ALTER TABLE users
+      DROP COLUMN IF EXISTS role,
+      DROP COLUMN IF EXISTS company_id
+  `);
+  console.log('↪  Dropped users.role and users.company_id');
 }
 
 /** Close the pool — used by scripts so the process can exit cleanly. */

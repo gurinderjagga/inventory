@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, useEffect, useMemo, u
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toastVariants } from '../lib/motion.js';
-import { IconSuccess, IconError, IconWarning, IconInfo, ICON_MD } from '../lib/icons.jsx';
+import { IconSuccess, IconError, IconWarning, IconInfo, IconClose, ICON_MD } from '../lib/icons.jsx';
 
 const ToastContext = createContext(null);
 
@@ -20,13 +20,34 @@ const TITLES = {
   info:    'Info',
 };
 
-const AUTO_DISMISS_MS = 4000;
+/**
+ * How long each kind of toast survives, in ms.
+ *
+ * Errors never expire on their own. They are the only messages that carry
+ * something the user has to act on — "Insufficient stock for X. Available: 3,
+ * Requested: 10" is a set of numbers to work from, and it used to vanish after
+ * four seconds with no history and no way to bring it back. Warnings get a
+ * longer window for the same reason; confirmations stay brief.
+ */
+const AUTO_DISMISS_MS = {
+  success: 4000,
+  info:    4000,
+  warning: 8000,
+  error:   null,   // sticky — dismissed by the user, never by a timer
+};
+
+/** Beyond this the stack covers the page; the oldest is dropped to make room. */
+const MAX_TOASTS = 4;
 
 function ToastItem({ id, type, message, title, onRemove }) {
+  const sticky = AUTO_DISMISS_MS[type] === null;
   return (
     <motion.div
       className={`toast toast-${type}`}
-      onClick={() => onRemove(id)}
+      // Errors are announced immediately; the rest wait for a pause. The role
+      // lives on the toast rather than the container so each message gets the
+      // urgency it deserves.
+      role={type === 'error' || type === 'warning' ? 'alert' : 'status'}
       variants={toastVariants}
       initial="initial"
       animate="animate"
@@ -39,6 +60,16 @@ function ToastItem({ id, type, message, title, onRemove }) {
         <div className="toast-title">{title || TITLES[type]}</div>
         {message && <div className="toast-msg">{message}</div>}
       </div>
+      {/* A real button, not a click-anywhere div: the old toast was dismissible
+          only by mouse and gave no sign that it was dismissible at all. */}
+      <button
+        type="button"
+        className="toast-close"
+        onClick={() => onRemove(id)}
+        aria-label={`Dismiss ${(title || TITLES[type]).toLowerCase()} message`}
+      >
+        <IconClose size={sticky ? ICON_MD : 14} />
+      </button>
     </motion.div>
   );
 }
@@ -62,8 +93,22 @@ export function ToastProvider({ children }) {
 
   const addToast = useCallback((type, message, title) => {
     const id = nextId.current++;
-    setToasts(prev => [...prev, { id, type, message, title }]);
-    timers.current.set(id, setTimeout(() => removeToast(id), AUTO_DISMISS_MS));
+    setToasts((prev) => {
+      const next = [...prev, { id, type, message, title }];
+      // Sticky errors can pile up, so make room by dropping the oldest — and
+      // clear its timer, since it may still have one pending.
+      while (next.length > MAX_TOASTS) {
+        const dropped = next.shift();
+        const timer = timers.current.get(dropped.id);
+        if (timer) { clearTimeout(timer); timers.current.delete(dropped.id); }
+      }
+      return next;
+    });
+
+    const ttl = AUTO_DISMISS_MS[type];
+    if (ttl != null) {
+      timers.current.set(id, setTimeout(() => removeToast(id), ttl));
+    }
   }, [removeToast]);
 
   useEffect(() => {
@@ -102,7 +147,9 @@ export function ToastProvider({ children }) {
     <ToastContext.Provider value={value}>
       {children}
       {toastRoot && createPortal(
-        <div id="toast-container" aria-live="polite">
+        // No aria-live here: each toast carries its own role, so nesting a
+        // live region would make screen readers announce twice.
+        <div id="toast-container">
           <AnimatePresence initial={false}>
             {toasts.map(t => (
               <ToastItem key={t.id} {...t} onRemove={removeToast} />

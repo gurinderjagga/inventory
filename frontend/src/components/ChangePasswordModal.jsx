@@ -43,10 +43,12 @@ export default function ChangePasswordModal({ isOpen, onClose }) {
       isOpen={isOpen}
       onClose={close}
       title="Change Password"
+      onSubmit={handleSave}
+      dirty={!!(form.current || form.next || form.confirm)}
       footer={
         <>
-          <button className="btn btn-secondary" onClick={close}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+          <button type="button" className="btn btn-secondary" onClick={close}>Cancel</button>
+          <button className="btn btn-primary" disabled={saving}>
             {saving
               ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</>
               : <><IconCheck size={ICON_MD} /> Change Password</>}

@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { MotionConfig } from "framer-motion";
 import { AuthProvider, useAuth } from "./contexts/AuthContext.jsx";
 import { ToastProvider } from "./contexts/ToastContext.jsx";
@@ -22,25 +22,22 @@ function LoadingPage() {
 // Wraps authenticated routes — redirects to /login if no session
 function ProtectedLayout() {
   const { user, loading } = useAuth();
+  const location          = useLocation();
 
   if (loading) return <LoadingPage />;
-  if (!user) return <Navigate to="/login" replace />;
+  // Remember where they were headed. A session that expires mid-task used to
+  // drop the user on the Dashboard after signing back in, with no hint that
+  // they had been somewhere else.
+  if (!user) {
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: location.pathname + location.search }}
+      />
+    );
+  }
   return <Layout />;
-}
-
-/**
- * Gate for platform-admin-only pages.
- *
- * This hides a page a company admin has no use for; it is not the security
- * boundary. The API independently refuses these calls, so bypassing the router
- * gains nothing.
- */
-function AdminOnly({ children }) {
-  const { loading, isAdmin } = useAuth();
-
-  if (loading) return <LoadingPage />;
-  if (!isAdmin) return <Navigate to="/" replace />;
-  return children;
 }
 
 export default function App() {
@@ -60,14 +57,7 @@ export default function App() {
             <Route path="/companies" element={<Companies />} />
             <Route path="/stock" element={<Stock />} />
             <Route path="/invoices" element={<Invoices />} />
-            <Route
-              path="/users"
-              element={
-                <AdminOnly>
-                  <Users />
-                </AdminOnly>
-              }
-            />
+            <Route path="/users" element={<Users />} />
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />

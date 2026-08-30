@@ -3,7 +3,6 @@ const PDFDocument = require('pdfkit');
 const { query, runTransaction } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
-const { companyScope, resolveCompanyId } = require('../middleware/authorize');
 const { ValidationError, NotFoundError, ConflictError } = require('../lib/errors');
 const v = require('../lib/validate');
 const { formatAmount } = require('../lib/currency');
@@ -18,15 +17,76 @@ function generateInvoiceNo() {
   return `INV-${datePart}-${randPart}`;
 }
 
+/**
+ * Normalise and validate the line items of an incoming invoice.
+ *
+ * Shared by create and update so a draft cannot be edited into a state the
+ * create path would have rejected. Every line is checked before the database
+ * is touched, so a bad line is a 400 rather than a foreign-key failure.
+ *
+ * The company_id filter matters twice over: it stops one tenant billing
+ * another tenant's stock, and it stops an invoice mixing items across
+ * companies, which would make the stock deduction on finalize incoherent.
+ */
+async function normalizeLines(companyId, line_items) {
+  if (!Array.isArray(line_items) || line_items.length === 0) {
+    throw new ValidationError('At least one line item is required');
+  }
+
+  const lines = line_items.map((li, idx) => {
+    const label = `Line ${idx + 1}`;
+    const qty   = v.nonNegativeNumber(li.quantity, `${label} quantity`);
+    if (qty <= 0) throw new ValidationError(`${label} quantity must be greater than 0`);
+    return {
+      itemId:    v.id(li.item_id, `${label} item_id`),
+      quantity:  qty,
+      unitPrice: v.nonNegativeNumber(li.unit_price, `${label} unit price`, { fallback: 0 }),
+    };
+  });
+
+  // Use the stored name so a client cannot mislabel a line.
+  const ids = [...new Set(lines.map(l => l.itemId))];
+  const { rows: found } = await query(
+    'SELECT id, name FROM items WHERE id = ANY($1::int[]) AND company_id = $2',
+    [ids, companyId]
+  );
+  const nameById = new Map(found.map(r => [r.id, r.name]));
+  const missing  = ids.filter(id => !nameById.has(id));
+  if (missing.length) {
+    throw new ValidationError(
+      `No such item${missing.length === 1 ? '' : 's'} for this company: ${missing.join(', ')}`
+    );
+  }
+
+  return lines.map(l => ({ ...l, itemName: nameById.get(l.itemId) }));
+}
+
+/** Money totals for a set of normalised lines. */
+function invoiceTotals(lines, taxRate) {
+  const subtotal = lines.reduce((sum, l) => sum + l.quantity * l.unitPrice, 0);
+  return { subtotal, total: subtotal + subtotal * (taxRate / 100) };
+}
+
+/** Write the line items of an invoice, replacing whatever is already there. */
+async function writeLines(client, invoiceId, lines) {
+  await client.query('DELETE FROM invoice_line_items WHERE invoice_id = $1', [invoiceId]);
+  for (const l of lines) {
+    await client.query(
+      `INSERT INTO invoice_line_items (invoice_id, item_id, item_name, quantity, unit_price, line_total)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [invoiceId, l.itemId, l.itemName, l.quantity, l.unitPrice, l.quantity * l.unitPrice]
+    );
+  }
+}
+
 // GET /api/invoices  — all invoices with company name
 router.get('/', asyncHandler(async (req, res) => {
   const { rows } = await query(`
     SELECT i.*, c.name AS company_name
     FROM invoices i
     JOIN companies c ON c.id = i.company_id
-    WHERE ($1::int IS NULL OR i.company_id = $1)
     ORDER BY i.created_at DESC
-  `, [companyScope(req)]);
+  `);
   res.json(rows);
 }));
 
@@ -38,8 +98,7 @@ router.get('/summary/stats', asyncHandler(async (req, res) => {
       COALESCE(SUM(CASE WHEN status = 'finalized' THEN total ELSE 0 END), 0) AS total_revenue,
       COUNT(*) FILTER (WHERE status = 'draft')                               AS draft_count
     FROM invoices
-    WHERE ($1::int IS NULL OR company_id = $1)
-  `, [companyScope(req)]);
+  `);
   const r = rows[0];
   res.json({
     totalInvoices: Number(r.total_invoices),
@@ -57,8 +116,8 @@ router.get('/:id', asyncHandler(async (req, res) => {
            c.phone AS company_phone, c.address AS company_address
     FROM invoices i
     JOIN companies c ON c.id = i.company_id
-    WHERE i.id = $1 AND ($2::int IS NULL OR i.company_id = $2)
-  `, [id, companyScope(req)]);
+    WHERE i.id = $1
+  `, [id]);
 
   const invoice = rows[0];
   if (!invoice) throw new NotFoundError('Invoice not found');
@@ -76,53 +135,15 @@ router.get('/:id', asyncHandler(async (req, res) => {
 router.post('/', asyncHandler(async (req, res) => {
   const { company_id, customer_name, customer_email, notes, tax_rate, line_items } = req.body;
 
-  // A company admin may omit company_id, but never name another company.
-  const companyId   = resolveCompanyId(req, company_id);
+  const companyId   = v.id(company_id, 'company_id');
   const customerNm  = v.requiredString(customer_name, 'customer_name');
   const taxRate     = v.nonNegativeNumber(tax_rate, 'Tax rate', { fallback: 0 });
-
-  if (!Array.isArray(line_items) || line_items.length === 0) {
-    throw new ValidationError('At least one line item is required');
-  }
-
-  // Normalise and validate every line before touching the database, so a bad
-  // line is reported as a bad request instead of a foreign-key failure.
-  const lines = line_items.map((li, idx) => {
-    const label = `Line ${idx + 1}`;
-    const qty   = v.nonNegativeNumber(li.quantity,   `${label} quantity`);
-    if (qty <= 0) throw new ValidationError(`${label} quantity must be greater than 0`);
-    return {
-      itemId:    v.id(li.item_id, `${label} item_id`),
-      itemName:  li.item_name,
-      quantity:  qty,
-      unitPrice: v.nonNegativeNumber(li.unit_price, `${label} unit price`, { fallback: 0 }),
-    };
-  });
 
   const { rows: company } = await query('SELECT id FROM companies WHERE id = $1', [companyId]);
   if (!company[0]) throw new NotFoundError('Company not found');
 
-  // Confirm every referenced item exists AND belongs to the invoice's company,
-  // and use the stored name so a client cannot mislabel a line.
-  //
-  // The company_id filter matters twice over: it stops one tenant billing
-  // another tenant's stock, and it stops an invoice mixing items across
-  // companies, which would make the stock deduction on finalize incoherent.
-  const ids = [...new Set(lines.map(l => l.itemId))];
-  const { rows: found } = await query(
-    'SELECT id, name FROM items WHERE id = ANY($1::int[]) AND company_id = $2',
-    [ids, companyId]
-  );
-  const nameById = new Map(found.map(r => [r.id, r.name]));
-  const missing  = ids.filter(id => !nameById.has(id));
-  if (missing.length) {
-    throw new ValidationError(
-      `No such item${missing.length === 1 ? '' : 's'} for this company: ${missing.join(', ')}`
-    );
-  }
-
-  const subtotal = lines.reduce((sum, l) => sum + l.quantity * l.unitPrice, 0);
-  const total    = subtotal + subtotal * (taxRate / 100);
+  const lines = await normalizeLines(companyId, line_items);
+  const { subtotal, total } = invoiceTotals(lines, taxRate);
 
   const invoice = await runTransaction(async (client) => {
     const { rows } = await client.query(
@@ -136,19 +157,69 @@ router.post('/', asyncHandler(async (req, res) => {
       ]
     );
     const created = rows[0];
-
-    for (const l of lines) {
-      await client.query(
-        `INSERT INTO invoice_line_items (invoice_id, item_id, item_name, quantity, unit_price, line_total)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [created.id, l.itemId, nameById.get(l.itemId), l.quantity, l.unitPrice, l.quantity * l.unitPrice]
-      );
-    }
-
+    await writeLines(client, created.id, lines);
     return created;
   });
 
   res.status(201).json(invoice);
+}));
+
+// PUT /api/invoices/:id  — edit a draft (finalized invoices are immutable)
+//
+// Without this a draft that fails to finalize — almost always because stock
+// moved underneath it — was a dead end: the only way out was deleting it and
+// retyping every line. The company is deliberately not editable; changing it
+// would orphan every line item against another tenant's stock.
+router.put('/:id', asyncHandler(async (req, res) => {
+  const id = v.id(req.params.id, 'Invoice id');
+  const { customer_name, customer_email, notes, tax_rate, line_items } = req.body;
+
+  const customerNm = v.requiredString(customer_name, 'customer_name');
+  const taxRate    = v.nonNegativeNumber(tax_rate, 'Tax rate', { fallback: 0 });
+
+  const { rows: existing } = await query(
+    'SELECT id, company_id, status FROM invoices WHERE id = $1',
+    [id]
+  );
+  const current = existing[0];
+  if (!current) throw new NotFoundError('Invoice not found');
+  if (current.status === 'finalized') {
+    throw new ConflictError(
+      'This invoice has been finalized and can no longer be edited.'
+    );
+  }
+
+  const lines = await normalizeLines(current.company_id, line_items);
+  const { subtotal, total } = invoiceTotals(lines, taxRate);
+
+  const invoice = await runTransaction(async (client) => {
+    // Re-check the status under a row lock: a concurrent finalize must not be
+    // overwritten by an edit that started while the invoice was still a draft.
+    const { rows: locked } = await client.query(
+      'SELECT status FROM invoices WHERE id = $1 FOR UPDATE',
+      [id]
+    );
+    if (!locked[0]) throw new NotFoundError('Invoice not found');
+    if (locked[0].status === 'finalized') {
+      throw new ConflictError('This invoice has been finalized and can no longer be edited.');
+    }
+
+    const { rows } = await client.query(
+      `UPDATE invoices
+       SET customer_name = $1, customer_email = $2, notes = $3,
+           subtotal = $4, tax_rate = $5, total = $6
+       WHERE id = $7
+       RETURNING *`,
+      [
+        customerNm, v.optionalString(customer_email), v.optionalString(notes),
+        subtotal, taxRate, total, id,
+      ]
+    );
+    await writeLines(client, id, lines);
+    return rows[0];
+  });
+
+  res.json(invoice);
 }));
 
 // POST /api/invoices/:id/finalize  — atomic stock deduction
@@ -162,8 +233,8 @@ router.post('/:id/finalize', asyncHandler(async (req, res) => {
     // Re-read under a row lock so two concurrent finalize requests cannot both
     // pass the status check and deduct stock twice.
     const { rows: invRows } = await client.query(
-      'SELECT * FROM invoices WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) FOR UPDATE',
-      [id, companyScope(req)]
+      'SELECT * FROM invoices WHERE id = $1 FOR UPDATE',
+      [id]
     );
     const invoice = invRows[0];
     if (!invoice) throw new NotFoundError('Invoice not found');
@@ -216,8 +287,8 @@ router.delete('/:id', asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Invoice id');
 
   const { rows } = await query(
-    'SELECT status FROM invoices WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
-    [id, companyScope(req)]
+    'SELECT status FROM invoices WHERE id = $1',
+    [id]
   );
   const invoice = rows[0];
   if (!invoice) throw new NotFoundError('Invoice not found');
@@ -239,8 +310,8 @@ router.get('/:id/pdf', asyncHandler(async (req, res) => {
            c.phone AS company_phone, c.address AS company_address
     FROM invoices i
     JOIN companies c ON c.id = i.company_id
-    WHERE i.id = $1 AND ($2::int IS NULL OR i.company_id = $2)
-  `, [id, companyScope(req)]);
+    WHERE i.id = $1
+  `, [id]);
 
   const invoice = rows[0];
   if (!invoice) throw new NotFoundError('Invoice not found');

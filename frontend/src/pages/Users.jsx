@@ -6,16 +6,24 @@ import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
-import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconSearch, IconShield, IconUserPlus, IconUsers, ICON_MD } from '../lib/icons.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import Pagination, { usePagination } from '../components/Pagination.jsx';
+import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
+import { formatDate } from '../lib/format.js';
+import { IconAlert, IconCheck, IconDelete, IconEdit, IconSearch, IconUserPlus, IconUsers, ICON_MD } from '../lib/icons.jsx';
 
-const EMPTY_FORM = { username: '', password: '', role: 'company_admin', company_id: '' };
+const EMPTY_FORM = { username: '', password: '' };
+
+const SORT_COLUMNS = {
+  username:   r => r.username,
+  created_at: r => new Date(r.created_at).getTime(),
+};
 
 export default function Users() {
   const { toast } = useToast();
   const { user }  = useAuth();
 
   const [users, setUsers]         = useState([]);
-  const [companies, setCompanies] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [search, setSearch]       = useState('');
   const [modal, setModal]         = useState(null);   // null | { mode:'add'|'edit', data }
@@ -23,12 +31,14 @@ export default function Users() {
   const [formErr, setFormErr]     = useState('');
   const [saving, setSaving]       = useState(false);
   const [confirm, setConfirm]     = useState(null);
+  const [deleting, setDeleting]   = useState(false);
+  const [pristine, setPristine]   = useState('');
+
+  const dirty = !!modal && JSON.stringify(form) !== pristine;
 
   const load = useCallback(async () => {
     try {
-      const [u, c] = await Promise.all([api.getUsers(), api.getCompanies()]);
-      setUsers(u);
-      setCompanies(c);
+      setUsers(await api.getUsers());
     } catch (e) {
       if (!isAuthError(e)) toast.error(e.message);
     } finally {
@@ -39,24 +49,24 @@ export default function Users() {
   useEffect(() => { load(); }, [load]);
 
   const filtered = users.filter(u =>
-    u.username.toLowerCase().includes(search.toLowerCase()) ||
-    (u.company_name || '').toLowerCase().includes(search.toLowerCase())
+    u.username.toLowerCase().includes(search.toLowerCase())
   );
+
+  const { sorted, sort, toggle } = useTableSort(filtered, SORT_COLUMNS);
+  const pager = usePagination(sorted);
 
   const openAdd = () => {
     setForm(EMPTY_FORM);
+    setPristine(JSON.stringify(EMPTY_FORM));
     setFormErr('');
     setModal({ mode: 'add', data: null });
   };
 
   const openEdit = (u) => {
     // Password intentionally blank: leaving it empty keeps the existing one.
-    setForm({
-      username:   u.username,
-      password:   '',
-      role:       u.role,
-      company_id: u.company_id ? String(u.company_id) : '',
-    });
+    const next = { username: u.username, password: '' };
+    setForm(next);
+    setPristine(JSON.stringify(next));
     setFormErr('');
     setModal({ mode: 'edit', data: u });
   };
@@ -78,16 +88,8 @@ export default function Users() {
     if (modal.mode === 'edit' && form.password && form.password.length < 8) {
       return setFormErr('Password must be at least 8 characters, or leave it blank to keep the current one.');
     }
-    if (form.role === 'company_admin' && !form.company_id) {
-      return setFormErr('A company admin must be assigned to a company.');
-    }
 
-    const payload = {
-      username: form.username.trim(),
-      role:     form.role,
-      // The API rejects a company on a platform admin, so send null.
-      company_id: form.role === 'company_admin' ? Number(form.company_id) : null,
-    };
+    const payload = { username: form.username.trim() };
     if (form.password) payload.password = form.password;
 
     setSaving(true);
@@ -108,15 +110,18 @@ export default function Users() {
   };
 
   const handleDelete = async () => {
-    if (!confirm) return;
+    if (!confirm || deleting) return;
     const { id, username } = confirm;
-    setConfirm(null);
+    setDeleting(true);
     try {
       await api.deleteUser(id);
       toast.success(`"${username}" deleted.`);
       load();
     } catch (e) {
       if (!isAuthError(e)) toast.error(e.message, 'Could not delete account');
+    } finally {
+      setDeleting(false);
+      setConfirm(null);
     }
   };
 
@@ -127,7 +132,11 @@ export default function Users() {
       <div className="page-header">
         <div className="page-header-text">
           <h2>User Accounts</h2>
-          <p>{users.length} {users.length === 1 ? 'account' : 'accounts'}</p>
+          <p>
+            {search
+              ? `${filtered.length} of ${users.length} ${users.length === 1 ? 'account' : 'accounts'} shown`
+              : `${users.length} ${users.length === 1 ? 'account' : 'accounts'} with access`}
+          </p>
         </div>
         <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
           <div className="search-wrap">
@@ -141,22 +150,26 @@ export default function Users() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="empty-state">
-          <IconUsers />
-          <h3>No accounts found</h3>
-          <p>Create an account using the button above.</p>
-        </div>
+        <EmptyState
+          Icon={IconUsers}
+          query={search}
+          onClear={() => setSearch('')}
+          noun="accounts"
+          title="No accounts yet"
+          hint="Create an account using the button above."
+        />
       ) : (
         <div className="table-wrapper">
           <table>
             <thead>
               <tr>
-                <th>Username</th><th>Role</th><th>Company</th><th>Created</th>
+                <SortableTh sortKey="username"   sort={sort} onToggle={toggle}>Username</SortableTh>
+                <SortableTh sortKey="created_at" sort={sort} onToggle={toggle}>Created</SortableTh>
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <motion.tbody variants={listContainer} initial="initial" animate="animate">
-              {filtered.map(u => {
+              {pager.visible.map(u => {
                 const isSelf = u.id === user?.id;
                 return (
                   <motion.tr key={u.id} variants={listItem}>
@@ -169,14 +182,8 @@ export default function Users() {
                         {isSelf && <span className="badge badge-neutral">you</span>}
                       </div>
                     </td>
-                    <td>
-                      {u.role === 'admin'
-                        ? <span className="badge badge-info badge-nodot"><IconShield size={13} /> Platform Admin</span>
-                        : <span className="badge badge-neutral"><IconCompany size={13} /> Company Admin</span>}
-                    </td>
-                    <td className="cell-muted">{u.company_name || '—'}</td>
                     <td className="cell-muted" style={{ whiteSpace: 'nowrap' }}>
-                      {new Date(u.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                      {formatDate(u.created_at)}
                     </td>
                     <td>
                       <div className="td-actions">
@@ -189,6 +196,7 @@ export default function Users() {
                           <button
                             className="btn btn-danger btn-sm"
                             onClick={() => setConfirm({ id: u.id, username: u.username })}
+                            title={`Delete ${u.username}`} aria-label={`Delete ${u.username}`}
                           >
                             <IconDelete size={ICON_MD} />
                           </button>
@@ -202,16 +210,19 @@ export default function Users() {
           </table>
         </div>
       )}
+      <Pagination {...pager} noun="accounts" />
 
       {/* Add / Edit */}
       <Modal
         isOpen={!!modal}
         onClose={closeModal}
         title={modal?.mode === 'add' ? 'Add User Account' : `Edit: ${modal?.data?.username}`}
+        onSubmit={handleSave}
+        dirty={dirty}
         footer={
           <>
-            <button className="btn btn-secondary" onClick={closeModal}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+            <button className="btn btn-primary" disabled={saving}>
               {saving
                 ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</>
                 : <><IconCheck size={ICON_MD} /> {modal?.mode === 'add' ? 'Create' : 'Save Changes'}</>}
@@ -221,7 +232,7 @@ export default function Users() {
       >
         <div className="form-group">
           <label>Username <span style={{ color: 'var(--danger)' }}>*</span></label>
-          <input type="text" placeholder="e.g. acme_admin" autoComplete="off" {...field('username')} autoFocus />
+          <input type="text" placeholder="e.g. warehouse_ops" autoComplete="off" {...field('username')} autoFocus />
         </div>
 
         <div className="form-group">
@@ -236,34 +247,13 @@ export default function Users() {
           </small>
         </div>
 
-        <div className="form-row">
-          <div className="form-group">
-            <label>Role <span style={{ color: 'var(--danger)' }}>*</span></label>
-            <select {...field('role')}>
-              <option value="company_admin">Company Admin</option>
-              <option value="admin">Platform Admin</option>
-            </select>
-          </div>
-          <div className="form-group">
-            <label>
-              Company {form.role === 'company_admin' && <span style={{ color: 'var(--danger)' }}>*</span>}
-            </label>
-            <select {...field('company_id')} disabled={form.role === 'admin'}>
-              <option value="">
-                {form.role === 'admin' ? 'Not applicable' : 'Select company…'}
-              </option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-            <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
-              {form.role === 'admin'
-                ? 'Platform admins are not tied to a company.'
-                : 'This account will only see this company’s data.'}
-            </small>
-          </div>
-        </div>
+        {/* Every account has the same access — there are no roles to assign. */}
+        <p style={{ fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>
+          Accounts can view and manage every company, its stock, and its invoices.
+        </p>
 
         {formErr && (
-          <div className="login-error">
+          <div className="login-error" style={{ marginTop: 12 }}>
             <IconAlert size={ICON_MD} /><span>{formErr}</span>
           </div>
         )}
@@ -274,7 +264,9 @@ export default function Users() {
         title="Delete Account"
         message={<>Delete the account <strong>{confirm?.username}</strong>? They will lose access immediately. This cannot be undone.</>}
         confirmText="Delete"
+        busyText="Deleting…"
         danger
+        busy={deleting}
         onConfirm={handleDelete}
         onCancel={() => setConfirm(null)}
       />

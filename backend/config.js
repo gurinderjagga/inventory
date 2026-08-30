@@ -72,7 +72,7 @@ if (isProduction && !isCrossSite) {
 module.exports = {
   NODE_ENV,
   isProduction,
-  PORT: Number(process.env.PORT) || 3000,
+  PORT: Number(process.env.PORT) || 5001,
   DATABASE_URL,
   JWT_SECRET,
   CORS_ORIGINS,

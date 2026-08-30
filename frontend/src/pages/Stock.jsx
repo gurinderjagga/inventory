@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
 import { listContainer, listItem, hoverLift } from '../lib/motion.js';
@@ -7,17 +8,35 @@ import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import Pagination, { usePagination } from '../components/Pagination.jsx';
+import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
 import { IconAlert, IconBack, IconCheck, IconChevron, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconStock, IconSuccess, IconWarning, ICON_MD } from '../lib/icons.jsx';
 
 const UNITS = ['pcs', 'boxes', 'reams', 'kg', 'liters', 'sets', 'packs', 'rolls', 'pairs'];
+
+/**
+ * Units counted in whole things. A shelf cannot hold 2.5 pieces, and letting
+ * the field accept it produced quantities no one could pick or ship.
+ */
+const DISCRETE_UNITS = new Set(['pcs', 'boxes', 'reams', 'sets', 'packs', 'rolls', 'pairs']);
+
+const SORT_COLUMNS = {
+  name:        r => r.name,
+  sku:         r => r.sku || '',
+  unit:        r => r.unit,
+  quantity:    r => Number(r.quantity),
+  unit_price:  r => Number(r.unit_price),
+  stock_value: r => Number(r.quantity) * Number(r.unit_price),
+  status:      r => (Number(r.quantity) <= Number(r.low_stock_threshold) ? 0 : 1),
+};
 const EMPTY_FORM = { name: '', sku: '', unit: 'pcs', quantity: '', unit_price: '', low_stock_threshold: '10' };
 
 export default function Stock() {
-  const { toast }               = useToast();
-  const { isAdmin }            = useAuth();
+  const { toast }                 = useToast();
   const [companies, setCompanies] = useState([]);
-  const [selected, setSelected]   = useState(null);   // selected company
   const [items, setItems]         = useState([]);
+  const [refreshKey, setRefreshKey] = useState(0);    // bumped to refetch items
   const [search, setSearch]       = useState('');
   const [loadingComp, setLoadingComp] = useState(true);
   const [loadingItems, setLoadingItems] = useState(false);
@@ -26,63 +45,83 @@ export default function Stock() {
   const [formErr, setFormErr]     = useState('');
   const [saving, setSaving]       = useState(false);
   const [confirm, setConfirm]     = useState(null);
+  const [deleting, setDeleting]   = useState(false);
+  const [pristine, setPristine]   = useState('');
 
-  /* ── Load items for selected company ──────────────── */
-  // Declared before loadCompanies, which calls it when auto-selecting.
-  const loadItems = useCallback(async (company) => {
-    setLoadingItems(true);
-    try {
-      const data = await api.getItems(company.id);
-      setItems(data);
-    } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
-    finally { setLoadingItems(false); }
-  }, [toast]);
+  // Which company's stock is on screen lives in the URL, not in useState.
+  // Held only in state, the view could not be bookmarked or shared, a refresh
+  // dumped an admin back to the picker, and Back left the page entirely
+  // instead of returning to the company list.
+  const [params, setParams] = useSearchParams();
+  const companyParam        = params.get('company');
+
+  const dirty      = !!modal && JSON.stringify(form) !== pristine;
+  const isDiscrete = DISCRETE_UNITS.has(form.unit);
 
   /* ── Load companies ────────────────────────────────── */
   const loadCompanies = useCallback(async () => {
     try {
       const data = await api.getCompanies();
       setCompanies(data);
-
-      // A company admin belongs to exactly one company, and the API returns
-      // only that one — asking them to choose from a list of one is pointless,
-      // so go straight to their stock.
-      if (!isAdmin && data.length === 1) {
-        setSelected(data[0]);
-        loadItems(data[0]);
-      }
     } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
     finally { setLoadingComp(false); }
-  }, [toast, isAdmin, loadItems]);
+  }, [toast]);
 
   useEffect(() => { loadCompanies(); }, [loadCompanies]);
 
+  // The company on screen is whichever one the URL names.
+  const selected = companies.find(c => String(c.id) === companyParam) || null;
+
+  // A link to a company that no longer exists falls back to the picker instead
+  // of showing an empty, nameless stock page.
+  useEffect(() => {
+    if (loadingComp || !companyParam || selected) return;
+    toast.warning('That company is no longer available.');
+    setParams({}, { replace: true });
+  }, [loadingComp, companyParam, selected, setParams, toast]);
+
+  /* ── Load items for the selected company ───────────── */
+  const selectedId = selected?.id;
+
+  useEffect(() => {
+    if (!selectedId) { setItems([]); return; }
+    let cancelled = false;
+    setLoadingItems(true);
+    api.getItems(selectedId)
+      .then(data => { if (!cancelled) setItems(data); })
+      .catch(e => { if (!cancelled && !isAuthError(e)) toast.error(e.message); })
+      .finally(() => { if (!cancelled) setLoadingItems(false); });
+    // Ignore a response that arrives after the user has moved on.
+    return () => { cancelled = true; };
+  }, [selectedId, refreshKey, toast]);
+
   const selectCompany = (company) => {
-    setSelected(company);
     setSearch('');
-    loadItems(company);
+    setParams({ company: String(company.id) });   // pushed, so Back returns here
   };
 
-  const goBack = async () => {
-    setSelected(null);
-    setItems([]);
+  const goBack = () => {
     setSearch('');
-    await loadCompanies();
+    setParams({});
+    loadCompanies();   // pick up stock-value changes made while inside
   };
 
   /* ── Item modal ────────────────────────────────────── */
   const openAdd = () => {
     setForm(EMPTY_FORM);
+    setPristine(JSON.stringify(EMPTY_FORM));
     setFormErr('');
     setModal({ mode: 'add', data: null });
   };
 
   const openEdit = (item) => {
-    setForm({
+    const next = {
       name: item.name, sku: item.sku || '', unit: item.unit,
       quantity: String(item.quantity), unit_price: String(item.unit_price),
       low_stock_threshold: String(item.low_stock_threshold),
-    });
+    };
+    setForm(next);
+    setPristine(JSON.stringify(next));
     setFormErr('');
     setModal({ mode: 'edit', data: item });
   };
@@ -95,6 +134,10 @@ export default function Stock() {
     const price = parseFloat(form.unit_price);
     if (isNaN(qty) || qty < 0) { setFormErr('Quantity must be ≥ 0.'); return; }
     if (isNaN(price) || price < 0) { setFormErr('Unit price must be ≥ 0.'); return; }
+    if (DISCRETE_UNITS.has(form.unit) && !Number.isInteger(qty)) {
+      setFormErr(`Quantity must be a whole number when the unit is ${form.unit}.`);
+      return;
+    }
 
     setSaving(true); setFormErr('');
     const payload = {
@@ -111,22 +154,26 @@ export default function Stock() {
         toast.success('Item updated.');
       }
       closeModal();
-      loadItems(selected);
+      setRefreshKey(k => k + 1);
     } catch (e) { setFormErr(e.message); setSaving(false); }
   };
 
   const handleDelete = async () => {
-    if (!confirm) return;
+    if (!confirm || deleting) return;
     const { id, name } = confirm;
-    // Close first: an item that appears on an invoice cannot be deleted, and
-    // the dialog lingering made that refusal look like a broken button.
-    setConfirm(null);
+    // Keep the dialog up, showing progress, until the request settles. An item
+    // that appears on an invoice cannot be deleted, and that refusal now
+    // arrives in a toast that stays put.
+    setDeleting(true);
     try {
       await api.deleteItem(id);
       toast.success(`"${name}" removed.`);
-      loadItems(selected);
+      setRefreshKey(k => k + 1);
     } catch (e) {
       if (!isAuthError(e)) toast.error(e.message, 'Could not delete item');
+    } finally {
+      setDeleting(false);
+      setConfirm(null);
     }
   };
 
@@ -134,6 +181,17 @@ export default function Stock() {
     value: form[key],
     onChange: (e) => setForm(f => ({ ...f, [key]: e.target.value })),
   });
+
+  /* ── Filter, sort, page ───────────────────────────────
+     Computed before the company-grid early return below: hooks cannot sit
+     behind a conditional. Harmless when no company is selected — `items` is
+     empty and nothing renders from it. */
+  const filteredItems = items.filter(i =>
+    i.name.toLowerCase().includes(search.toLowerCase()) ||
+    (i.sku || '').toLowerCase().includes(search.toLowerCase())
+  );
+  const { sorted, sort, toggle } = useTableSort(filteredItems, SORT_COLUMNS);
+  const pager = usePagination(sorted);
 
   /* ── Company grid ─────────────────────────────────── */
   if (!selected) {
@@ -159,7 +217,13 @@ export default function Stock() {
               return (
                 <motion.div key={c.id} className="company-card" onClick={() => selectCompany(c)} role="button" tabIndex={0}
                      variants={listItem} {...hoverLift}
-                     onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && selectCompany(c)}>
+                     // preventDefault, or Space both activates the card and
+                     // scrolls the page underneath it.
+                     onKeyDown={e => {
+                       if (e.key !== 'Enter' && e.key !== ' ') return;
+                       e.preventDefault();
+                       selectCompany(c);
+                     }}>
                   <div className="company-card-icon"><IconCompany size={ICON_MD} /></div>
                   <h3>{c.name}</h3>
                   <div className="company-card-meta">{c.email || ''}{c.phone ? ' · ' + c.phone : ''}</div>
@@ -188,36 +252,30 @@ export default function Stock() {
   }
 
   /* ── Items table ──────────────────────────────────── */
-  const filteredItems = items.filter(i =>
-    i.name.toLowerCase().includes(search.toLowerCase()) ||
-    (i.sku || '').toLowerCase().includes(search.toLowerCase())
-  );
-
   return (
     <div className="page-enter">
-      {/* Breadcrumb — only meaningful when there is a company list to go back to */}
-      {isAdmin && (
-        <div className="breadcrumb">
-          <button onClick={goBack} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, padding: 0 }}>
-            Stock
-          </button>
-          <IconChevron size={ICON_MD} style={{ fontSize: 10 }} />
-          <span className="current">{selected.name}</span>
-        </div>
-      )}
+      <div className="breadcrumb">
+        <button type="button" onClick={goBack} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, padding: 0 }}>
+          Stock
+        </button>
+        <IconChevron size={ICON_MD} style={{ fontSize: 10 }} />
+        <span className="current">{selected.name}</span>
+      </div>
 
       {/* Page header with actions */}
       <div className="page-header">
         <div className="page-header-text">
           <h2>{selected.name}</h2>
-          <p>{items.length} item{items.length !== 1 ? 's' : ''} in inventory</p>
+          <p>
+            {search
+              ? `${filteredItems.length} of ${items.length} item${items.length !== 1 ? 's' : ''} shown`
+              : `${items.length} item${items.length !== 1 ? 's' : ''} in inventory`}
+          </p>
         </div>
         <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
-          {isAdmin && (
-            <button className="btn btn-secondary" onClick={goBack}>
-              <IconBack size={ICON_MD} /> All Companies
-            </button>
-          )}
+          <button className="btn btn-secondary" onClick={goBack}>
+            <IconBack size={ICON_MD} /> All Companies
+          </button>
           <div className="search-wrap">
             <IconSearch size={ICON_MD} />
             <input placeholder="Search items…" value={search} onChange={e => setSearch(e.target.value)} />
@@ -231,26 +289,38 @@ export default function Stock() {
       {loadingItems ? (
         <div className="loading-page"><div className="spinner" /></div>
       ) : filteredItems.length === 0 ? (
-        <div className="empty-state">
-          <IconStock />
-          <h3>No items found</h3>
-          <p>Add your first stock item using the button above.</p>
-        </div>
+        <EmptyState
+          Icon={IconStock}
+          query={search}
+          onClear={() => setSearch('')}
+          noun="items"
+          title="No items yet"
+          hint="Add your first stock item using the button above."
+        />
       ) : (
         <div className="table-wrapper">
           <table>
             <thead>
               <tr>
-                <th>Item Name</th><th>SKU</th><th>Unit</th>
-                <th className="num">On Hand</th><th className="num">Unit Price</th><th className="num">Stock Value</th>
-                <th>Status</th><th style={{ textAlign: 'right' }}>Actions</th>
+                <SortableTh sortKey="name"        sort={sort} onToggle={toggle}>Item Name</SortableTh>
+                <SortableTh sortKey="sku"         sort={sort} onToggle={toggle}>SKU</SortableTh>
+                <SortableTh sortKey="unit"        sort={sort} onToggle={toggle}>Unit</SortableTh>
+                <SortableTh sortKey="quantity"    sort={sort} onToggle={toggle} align="num">On Hand</SortableTh>
+                <SortableTh sortKey="unit_price"  sort={sort} onToggle={toggle} align="num">Unit Price</SortableTh>
+                <SortableTh sortKey="stock_value" sort={sort} onToggle={toggle} align="num">Stock Value</SortableTh>
+                <SortableTh sortKey="status"      sort={sort} onToggle={toggle}>Status</SortableTh>
+                <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <motion.tbody variants={listContainer} initial="initial" animate="animate">
-              {filteredItems.map(item => {
+              {pager.visible.map(item => {
                 const isLow  = item.quantity <= item.low_stock_threshold;
+                // With no threshold set there is nothing to measure against,
+                // so the bar tracks "is there any stock at all" rather than
+                // showing a reassuring full bar for an empty shelf.
                 const pct    = item.low_stock_threshold > 0
-                  ? Math.min(100, (item.quantity / (item.low_stock_threshold * 3)) * 100) : 100;
+                  ? Math.min(100, (item.quantity / (item.low_stock_threshold * 3)) * 100)
+                  : item.quantity > 0 ? 100 : 0;
                 const barClr = isLow ? 'var(--warning)' : item.quantity > item.low_stock_threshold * 2 ? 'var(--success)' : 'var(--info)';
                 return (
                   <motion.tr key={item.id} variants={listItem}>
@@ -280,8 +350,14 @@ export default function Stock() {
                     </td>
                     <td>
                       <div className="td-actions">
-                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(item)}><IconEdit size={ICON_MD} /></button>
-                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: item.id, name: item.name })}><IconDelete size={ICON_MD} /></button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(item)}
+                                title={`Edit ${item.name}`} aria-label={`Edit ${item.name}`}>
+                          <IconEdit size={ICON_MD} />
+                        </button>
+                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: item.id, name: item.name })}
+                                title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`}>
+                          <IconDelete size={ICON_MD} />
+                        </button>
                       </div>
                     </td>
                   </motion.tr>
@@ -291,14 +367,17 @@ export default function Stock() {
           </table>
         </div>
       )}
+      <Pagination {...pager} noun="items" />
 
       {/* Item modal */}
       <Modal isOpen={!!modal} onClose={closeModal}
         title={modal?.mode === 'add' ? 'Add Stock Item' : `Edit: ${modal?.data?.name}`}
+        onSubmit={handleSave}
+        dirty={dirty}
         footer={
           <>
-            <button className="btn btn-secondary" onClick={closeModal}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+            <button className="btn btn-primary" disabled={saving}>
               {saving ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</> : <><IconCheck size={ICON_MD} /> {modal?.mode === 'add' ? 'Add Item' : 'Save Changes'}</>}
             </button>
           </>
@@ -317,7 +396,13 @@ export default function Stock() {
         </div>
         <div className="form-row">
           <div className="form-group"><label>Quantity <span style={{ color: 'var(--danger)' }}>*</span></label>
-            <input type="number" min="0" step="0.01" placeholder="0" {...field('quantity')} />
+            {/* Whole numbers for units you count, decimals for kg and litres. */}
+            <input type="number" min="0" step={isDiscrete ? '1' : '0.01'} placeholder="0" {...field('quantity')} />
+            {isDiscrete && (
+              <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
+                Whole {form.unit} only.
+              </small>
+            )}
           </div>
           <div className="form-group"><label>Unit Price (₹) <span style={{ color: 'var(--danger)' }}>*</span></label>
             <input type="number" min="0" step="0.01" placeholder="0.00" {...field('unit_price')} />
@@ -332,7 +417,7 @@ export default function Stock() {
 
       <ConfirmDialog isOpen={!!confirm} title="Delete Item"
         message={<>Remove <strong>{confirm?.name}</strong> from {selected.name}&rsquo;s inventory? This cannot be undone.</>}
-        confirmText="Delete" danger
+        confirmText="Delete" busyText="Deleting…" danger busy={deleting}
         onConfirm={handleDelete} onCancel={() => setConfirm(null)} />
     </div>
   );

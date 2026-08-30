@@ -28,10 +28,7 @@ router.post('/login', asyncHandler(async (req, res) => {
   }
 
   const { rows } = await query(
-    `SELECT u.*, c.name AS company_name
-     FROM users u
-     LEFT JOIN companies c ON c.id = u.company_id
-     WHERE u.username = $1`,
+    'SELECT id, username, password FROM users WHERE username = $1',
     [username.trim()]
   );
   const user = rows[0];
@@ -44,8 +41,8 @@ router.post('/login', asyncHandler(async (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
 
-  // Only the id goes in the token — role and company are read from the
-  // database on each request so privilege changes apply immediately.
+  // Only the id goes in the token — the account is read from the database on
+  // each request, so a deletion takes effect immediately.
   const token = jwt.sign(
     { id: user.id },
     JWT_SECRET,
@@ -54,12 +51,9 @@ router.post('/login', asyncHandler(async (req, res) => {
 
   res.cookie('token', token, { ...COOKIE_OPTIONS, maxAge: 24 * 60 * 60 * 1000 });
   res.json({
-    message:      'Login successful',
-    id:           user.id,
-    username:     user.username,
-    role:         user.role,
-    company_id:   user.company_id,
-    company_name: user.company_name,
+    message:  'Login successful',
+    id:       user.id,
+    username: user.username,
   });
 }));
 
@@ -101,14 +95,11 @@ router.post('/change-password', authMiddleware, asyncHandler(async (req, res) =>
   res.json({ message: 'Password changed successfully' });
 }));
 
-// GET /api/auth/me  — verify session, and report role + tenant
+// GET /api/auth/me  — verify the session and report who is signed in
 router.get('/me', authMiddleware, (req, res) => {
   res.json({
-    id:           req.user.id,
-    username:     req.user.username,
-    role:         req.user.role,
-    company_id:   req.user.company_id,
-    company_name: req.user.company_name,
+    id:       req.user.id,
+    username: req.user.username,
   });
 });
 

@@ -7,13 +7,24 @@ import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import Pagination, { usePagination } from '../components/Pagination.jsx';
+import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
 import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconWarning, ICON_MD } from '../lib/icons.jsx';
 
 const EMPTY_FORM = { name: '', email: '', phone: '', address: '' };
 
+const SORT_COLUMNS = {
+  name:            r => r.name,
+  email:           r => r.email || '',
+  phone:           r => r.phone || '',
+  item_count:      r => Number(r.item_count || 0),
+  low_stock_count: r => Number(r.low_stock_count || 0),
+  stock_value:     r => Number(r.stock_value || 0),
+};
+
 export default function Companies() {
   const { toast }   = useToast();
-  const { isAdmin } = useAuth();
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [search, setSearch]       = useState('');
@@ -22,6 +33,12 @@ export default function Companies() {
   const [formErr, setFormErr]     = useState('');
   const [saving, setSaving]       = useState(false);
   const [confirm, setConfirm]     = useState(null);   // null | { id, name }
+  const [deleting, setDeleting]   = useState(false);
+  // Snapshot taken when the modal opens, so "has anything changed?" is an
+  // honest comparison rather than a guess.
+  const [pristine, setPristine]   = useState('');
+
+  const dirty = !!modal && JSON.stringify(form) !== pristine;
 
   const load = useCallback(async () => {
     try {
@@ -41,15 +58,24 @@ export default function Companies() {
     (c.email || '').toLowerCase().includes(search.toLowerCase())
   );
 
+  const { sorted, sort, toggle } = useTableSort(filtered, SORT_COLUMNS);
+  const pager = usePagination(sorted);
+
   /* ── Open modal ─────────────────────────────────────── */
   const openAdd = () => {
     setForm(EMPTY_FORM);
+    setPristine(JSON.stringify(EMPTY_FORM));
     setFormErr('');
     setModal({ mode: 'add', data: null });
   };
 
   const openEdit = (company) => {
-    setForm({ name: company.name, email: company.email || '', phone: company.phone || '', address: company.address || '' });
+    const next = {
+      name: company.name, email: company.email || '',
+      phone: company.phone || '', address: company.address || '',
+    };
+    setForm(next);
+    setPristine(JSON.stringify(next));
     setFormErr('');
     setModal({ mode: 'edit', data: company });
   };
@@ -79,17 +105,20 @@ export default function Companies() {
 
   /* ── Delete ─────────────────────────────────────────── */
   const handleDelete = async () => {
-    if (!confirm) return;
+    if (!confirm || deleting) return;
     const { id, name } = confirm;
-    // Close the dialog whatever happens — leaving it open on failure made the
-    // Delete button look dead while the real reason sat in a toast behind it.
-    setConfirm(null);
+    // Stay open, showing progress, until the request settles — then close
+    // either way. The error lands in a toast that no longer times out.
+    setDeleting(true);
     try {
       await api.deleteCompany(id);
       toast.success(`"${name}" deleted.`);
       load();
     } catch (e) {
       if (!isAuthError(e)) toast.error(e.message, 'Could not delete company');
+    } finally {
+      setDeleting(false);
+      setConfirm(null);
     }
   };
 
@@ -106,51 +135,52 @@ export default function Companies() {
       {/* Header */}
       <div className="page-header">
         <div className="page-header-text">
-          <h2>{isAdmin ? 'All Companies' : 'My Company'}</h2>
+          <h2>All Companies</h2>
           <p>
-            {isAdmin
-              ? `${companies.length} ${companies.length === 1 ? 'company' : 'companies'} registered`
-              : 'Details shown on your invoices'}
+            {/* While a filter is on, the count has to describe the table the
+                user is actually looking at. */}
+            {search
+              ? `${filtered.length} of ${companies.length} ${companies.length === 1 ? 'company' : 'companies'} shown`
+              : `${companies.length} ${companies.length === 1 ? 'company' : 'companies'} registered`}
           </p>
         </div>
-        {/* Search over a single row is noise, and only a platform admin may
-            create companies — the API answers 403 for anyone else. */}
-        {isAdmin && (
-          <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
-            <div className="search-wrap">
-              <IconSearch size={ICON_MD} />
-              <input placeholder="Search companies…" value={search} onChange={e => setSearch(e.target.value)} />
-            </div>
-            <button className="btn btn-primary" onClick={openAdd}>
-              <IconPlus size={ICON_MD} /> Add Company
-            </button>
+        <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
+          <div className="search-wrap">
+            <IconSearch size={ICON_MD} />
+            <input placeholder="Search companies…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-        )}
+          <button className="btn btn-primary" onClick={openAdd}>
+            <IconPlus size={ICON_MD} /> Add Company
+          </button>
+        </div>
       </div>
 
       {/* Table */}
       {filtered.length === 0 ? (
-        <div className="empty-state">
-          <IconCompany />
-          <h3>No companies found</h3>
-          <p>Add your first company using the button above.</p>
-        </div>
+        <EmptyState
+          Icon={IconCompany}
+          query={search}
+          onClear={() => setSearch('')}
+          noun="companies"
+          title="No companies yet"
+          hint="Add your first company using the button above."
+        />
       ) : (
         <div className="table-wrapper">
           <table>
             <thead>
               <tr>
-                <th>Company Name</th>
-                <th>Email</th>
-                <th>Phone</th>
-                <th>Items</th>
-                <th>Low Stock</th>
-                <th className="num">Stock Value</th>
+                <SortableTh sortKey="name"            sort={sort} onToggle={toggle}>Company Name</SortableTh>
+                <SortableTh sortKey="email"           sort={sort} onToggle={toggle}>Email</SortableTh>
+                <SortableTh sortKey="phone"           sort={sort} onToggle={toggle}>Phone</SortableTh>
+                <SortableTh sortKey="item_count"      sort={sort} onToggle={toggle}>Items</SortableTh>
+                <SortableTh sortKey="low_stock_count" sort={sort} onToggle={toggle}>Low Stock</SortableTh>
+                <SortableTh sortKey="stock_value"     sort={sort} onToggle={toggle} align="num">Stock Value</SortableTh>
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <motion.tbody variants={listContainer} initial="initial" animate="animate">
-              {filtered.map(c => (
+              {pager.visible.map(c => (
                 <motion.tr key={c.id} variants={listItem}>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -172,12 +202,10 @@ export default function Companies() {
                       <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>
                         <IconEdit size={ICON_MD} /> Edit
                       </button>
-                      {/* Deleting a tenant is platform-admin only. */}
-                      {isAdmin && (
-                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}>
-                          <IconDelete size={ICON_MD} />
-                        </button>
-                      )}
+                      <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}
+                              title={`Delete ${c.name}`} aria-label={`Delete ${c.name}`}>
+                        <IconDelete size={ICON_MD} />
+                      </button>
                     </div>
                   </td>
                 </motion.tr>
@@ -186,16 +214,19 @@ export default function Companies() {
           </table>
         </div>
       )}
+      <Pagination {...pager} noun="companies" />
 
       {/* Add / Edit Modal */}
       <Modal
         isOpen={!!modal}
         onClose={closeModal}
         title={modal?.mode === 'add' ? 'Add New Company' : 'Edit Company'}
+        onSubmit={handleSave}
+        dirty={dirty}
         footer={
           <>
-            <button className="btn btn-secondary" onClick={closeModal}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+            <button className="btn btn-primary" disabled={saving}>
               {saving ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</> : <><IconCheck size={ICON_MD} /> {modal?.mode === 'add' ? 'Create' : 'Save Changes'}</>}
             </button>
           </>
@@ -232,7 +263,9 @@ export default function Companies() {
         title="Delete Company"
         message={<>Delete <strong>{confirm?.name}</strong>? Its stock items will be removed too, and this cannot be undone. Companies that already have invoices cannot be deleted.</>}
         confirmText="Delete"
+        busyText="Deleting…"
         danger
+        busy={deleting}
         onConfirm={handleDelete}
         onCancel={() => setConfirm(null)}
       />

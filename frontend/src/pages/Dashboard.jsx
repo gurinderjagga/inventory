@@ -1,12 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { motion, animate, useReducedMotion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { api, isAuthError } from '../api.js';
-import { useAuth } from '../contexts/AuthContext.jsx';
 import { listContainer, listItem } from '../lib/motion.js';
-import { formatCurrency } from '../lib/format.js';
+import { formatCurrency, formatDate } from '../lib/format.js';
 import { IconCompany, IconStock, IconInvoice, IconAlert, IconWarning, IconSuccess, IconPending,
-         IconPlusCircle, IconChevron, ICON_MD, ICON_LG } from '../lib/icons.jsx';
+         IconPlusCircle, IconChevron, IconRefresh, ICON_MD, ICON_LG } from '../lib/icons.jsx';
 
 function KpiCard({ label, value, Icon, accent }) {
   return (
@@ -44,29 +43,32 @@ function CountUp({ value }) {
 }
 
 export default function Dashboard() {
-  const navigate  = useNavigate();
-  const { isAdmin } = useAuth();
+  const navigate = useNavigate();
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [companies, stats, invoices] = await Promise.all([
-          api.getCompanies(),
-          api.getInvoiceStats(),
-          api.getInvoices(),
-        ]);
-        setData({ companies, stats, recent: invoices.slice(0, 8) });
-      } catch (err) {
-        // Session expiry redirects to /login on its own; no error screen needed.
-        if (!isAuthError(err)) setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const load = useCallback(async ({ quiet = false } = {}) => {
+    if (quiet) setRefreshing(true);
+    setError('');
+    try {
+      const [companies, stats, invoices] = await Promise.all([
+        api.getCompanies(),
+        api.getInvoiceStats(),
+        api.getInvoices(),
+      ]);
+      setData({ companies, stats, recent: invoices.slice(0, 8) });
+    } catch (err) {
+      // Session expiry redirects to /login on its own; no error screen needed.
+      if (!isAuthError(err)) setError(err.message);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   if (loading) return (
     <div className="loading-page">
@@ -74,10 +76,16 @@ export default function Dashboard() {
     </div>
   );
 
+  // A dead end before: the message with no way to act on it, on a page whose
+  // only recovery was reloading the browser.
   if (error) return (
     <div className="db-empty" style={{ height: 300 }}>
       <IconAlert />
       <p>{error}</p>
+      <button type="button" className="btn btn-secondary" style={{ marginTop: 12 }}
+              onClick={() => { setLoading(true); load(); }}>
+        <IconRefresh size={ICON_MD} /> Try again
+      </button>
     </div>
   );
 
@@ -87,6 +95,17 @@ export default function Dashboard() {
 
   return (
     <div className="db-wrap page-enter">
+
+      {/* Figures go stale the moment an invoice is finalized in another tab,
+          and there was no way to ask for fresh ones short of a full reload. */}
+      <div className="db-toolbar">
+        <button type="button" className="btn btn-secondary btn-sm"
+                onClick={() => load({ quiet: true })} disabled={refreshing}>
+          {refreshing
+            ? <><span className="spinner" style={{ width: 13, height: 13, borderWidth: 2 }} /> Refreshing…</>
+            : <><IconRefresh size={ICON_MD} /> Refresh</>}
+        </button>
+      </div>
 
       {/* Low-stock alert */}
       {totalLowStock > 0 && (
@@ -116,7 +135,14 @@ export default function Dashboard() {
         <div className="db-card">
           <div className="db-card-head">
             <span className="db-card-title">Recent Invoices</span>
-            <span className="db-chip">{stats.totalInvoices} total</span>
+            <div className="db-card-head-actions">
+              <span className="db-chip">{stats.totalInvoices} total</span>
+              {recent.length > 0 && (
+                <button type="button" className="db-link-btn" onClick={() => navigate('/invoices')}>
+                  View all <IconChevron size={12} />
+                </button>
+              )}
+            </div>
           </div>
 
           {recent.length === 0 ? (
@@ -138,8 +164,23 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <motion.tbody variants={listContainer} initial="initial" animate="animate">
+                  {/* Rows open the invoice rather than merely listing it —
+                      previously the whole panel was a dead end. */}
                   {recent.map(inv => (
-                    <motion.tr key={inv.id} variants={listItem}>
+                    <motion.tr
+                      key={inv.id}
+                      variants={listItem}
+                      className="db-row-link"
+                      role="button"
+                      tabIndex={0}
+                      title={`Open ${inv.invoice_no}`}
+                      onClick={() => navigate(`/invoices?view=${inv.id}`)}
+                      onKeyDown={e => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        navigate(`/invoices?view=${inv.id}`);
+                      }}
+                    >
                       <td className="db-mono">{inv.invoice_no}</td>
                       <td className="db-company-cell">{inv.company_name}</td>
                       <td className="db-secondary">{inv.customer_name}</td>
@@ -152,7 +193,7 @@ export default function Dashboard() {
                         </span>
                       </td>
                       <td className="db-secondary db-date">
-                        {new Date(inv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        {formatDate(inv.created_at, { short: true })}
                       </td>
                     </motion.tr>
                   ))}
@@ -209,11 +250,7 @@ export default function Dashboard() {
               {[
                 { label: 'New Invoice',  Icon: IconPlusCircle, to: '/invoices' },
                 { label: 'Manage Stock', Icon: IconStock,      to: '/stock'    },
-                // Only a platform admin can add a company; for anyone else this
-                // linked to a page whose action the API refuses.
-                isAdmin
-                  ? { label: 'Add Company', Icon: IconCompany, to: '/companies' }
-                  : { label: 'My Company',  Icon: IconCompany, to: '/companies' },
+                { label: 'Add Company',  Icon: IconCompany,    to: '/companies' },
               ].map(a => (
                 <button key={a.label} className="db-action-btn" onClick={() => navigate(a.to)}>
                   <a.Icon size={ICON_MD} />

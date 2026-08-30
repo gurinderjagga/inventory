@@ -1,17 +1,36 @@
-import { useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate, Navigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { cardVariants } from '../lib/motion.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
-import { IconAlert, IconBrand, IconLock, IconShield, IconUser, ICON_MD } from '../lib/icons.jsx';
+import { IconAlert, IconBrand, IconHide, IconLock, IconShield, IconUser, IconView, IconWarning, ICON_MD } from '../lib/icons.jsx';
 
 export default function Login() {
-  const { login, user, loading: authLoading } = useAuth();
+  const { login, user, loading: authLoading, sessionExpired } = useAuth();
   const navigate        = useNavigate();
+  const location        = useLocation();
+
+  // Where the user was when the session ended, so signing back in returns them
+  // there instead of to the Dashboard. Only in-app paths are honoured — a
+  // `from` is router state, and an absolute URL there would be an open redirect.
+  useEffect(() => { document.title = 'Sign in · StockFlow'; }, []);
+
+  const rawFrom  = location.state?.from;
+  const redirect = typeof rawFrom === 'string' && rawFrom.startsWith('/') && !rawFrom.startsWith('//')
+    ? rawFrom
+    : '/';
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
+  const [showPw, setShowPw]     = useState(false);
+  // Caps Lock is the single most common reason a correct password is rejected.
+  const [capsOn, setCapsOn]     = useState(false);
+
+  const trackCaps = (e) => {
+    const on = e.getModifierState?.('CapsLock');
+    if (typeof on === 'boolean') setCapsOn(on);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -23,7 +42,7 @@ export default function Login() {
     setError('');
     try {
       await login(username.trim(), password);
-      navigate('/', { replace: true });
+      navigate(redirect, { replace: true });
     } catch (err) {
       setError(err.message || 'Login failed. Please try again.');
     } finally {
@@ -33,7 +52,7 @@ export default function Login() {
 
   // Already signed in — send them to the app instead of showing a login form
   // they do not need. Declared after every hook so hook order stays stable.
-  if (!authLoading && user) return <Navigate to="/" replace />;
+  if (!authLoading && user) return <Navigate to={redirect} replace />;
 
   return (
     <div className="auth-wrapper">
@@ -44,6 +63,18 @@ export default function Login() {
           <h1>StockFlow</h1>
           <p>Inventory Management &amp; Invoicing</p>
         </div>
+
+        {/* Why they are looking at this form. Shown until they type — a
+            failed login attempt replaces it with the real error. */}
+        {sessionExpired && !error && (
+          <div className="login-notice" role="status">
+            <IconWarning size={ICON_MD} />
+            <span>
+              Your session ended, so you were signed out.
+              {redirect !== '/' && ' Sign in to pick up where you left off.'}
+            </span>
+          </div>
+        )}
 
         {/* Error */}
         {error && (
@@ -77,13 +108,31 @@ export default function Login() {
               <IconLock size={ICON_MD} />
               <input
                 id="login-password"
-                type="password"
+                type={showPw ? 'text' : 'password'}
                 placeholder="Enter your password"
                 autoComplete="current-password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
+                onKeyUp={trackCaps}
+                onKeyDown={trackCaps}
+                onBlur={() => setCapsOn(false)}
+                style={{ paddingRight: 38 }}
               />
+              <button
+                type="button"
+                className="input-affix-btn"
+                onClick={() => setShowPw(s => !s)}
+                aria-label={showPw ? 'Hide password' : 'Show password'}
+                title={showPw ? 'Hide password' : 'Show password'}
+              >
+                {showPw ? <IconHide size={ICON_MD} /> : <IconView size={ICON_MD} />}
+              </button>
             </div>
+            {capsOn && (
+              <small className="field-hint" role="status">
+                <IconWarning size={12} /> Caps Lock is on.
+              </small>
+            )}
           </div>
 
           <button
@@ -98,8 +147,11 @@ export default function Login() {
           </button>
         </form>
 
+        {/* "Secured with JWT authentication" was an implementation detail
+            dressed up as reassurance — it tells a user nothing they can act on
+            and names the mechanism to anyone probing the login. */}
         <div className="login-footer">
-          <IconShield size={ICON_MD} /> Secured with JWT authentication
+          <IconShield size={ICON_MD} /> Your session is encrypted and signs out automatically.
         </div>
       </motion.div>
     </div>

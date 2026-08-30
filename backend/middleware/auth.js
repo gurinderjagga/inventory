@@ -4,14 +4,13 @@ const { query } = require('../database/db');
 const { asyncHandler } = require('./asyncHandler');
 
 /**
- * Verify the session cookie, then load the user's role and company from the
- * database on every request.
+ * Verify the session cookie, then load the account from the database on every
+ * request.
  *
- * The token deliberately carries only the user id. Roles are authorisation
- * state, and baking them into a 24-hour token means a demoted or offboarded
- * account keeps its old privileges until that token expires. Reading them back
- * costs one primary-key lookup and makes a change of role — or deletion of the
- * account — take effect on the very next request.
+ * The token deliberately carries only the user id. Reading the account back
+ * costs one primary-key lookup and makes deletion of the account take effect on
+ * the very next request, rather than whenever a 24-hour token happens to
+ * expire.
  */
 async function authMiddlewareImpl(req, res, next) {
   const token = req.cookies?.token;
@@ -27,10 +26,7 @@ async function authMiddlewareImpl(req, res, next) {
   }
 
   const { rows } = await query(
-    `SELECT u.id, u.username, u.role, u.company_id, c.name AS company_name
-     FROM users u
-     LEFT JOIN companies c ON c.id = u.company_id
-     WHERE u.id = $1`,
+    'SELECT id, username FROM users WHERE id = $1',
     [payload.id]
   );
 

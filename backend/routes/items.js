@@ -2,7 +2,6 @@ const express = require('express');
 const { query } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
-const { companyScope, assertCompanyAccess, resolveCompanyId } = require('../middleware/authorize');
 const { NotFoundError, ConflictError } = require('../lib/errors');
 const v = require('../lib/validate');
 
@@ -30,9 +29,6 @@ function readBody(body) {
 // GET /api/items/company/:companyId  — items scoped to a company
 router.get('/company/:companyId', asyncHandler(async (req, res) => {
   const companyId = v.id(req.params.companyId, 'Company id');
-  // Asking for another tenant's stock reads as "no such company".
-  assertCompanyAccess(req, companyId, 'Company not found');
-
   const { rows } = await query(
     'SELECT * FROM items WHERE company_id = $1 ORDER BY name ASC',
     [companyId]
@@ -43,18 +39,14 @@ router.get('/company/:companyId', asyncHandler(async (req, res) => {
 // GET /api/items/:id
 router.get('/:id', asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Item id');
-  const { rows } = await query(
-    'SELECT * FROM items WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
-    [id, companyScope(req)]
-  );
+  const { rows } = await query('SELECT * FROM items WHERE id = $1', [id]);
   if (!rows[0]) throw new NotFoundError('Item not found');
   res.json(rows[0]);
 }));
 
 // POST /api/items
 router.post('/', asyncHandler(async (req, res) => {
-  // A company admin may omit company_id, but never name another company.
-  const companyId = resolveCompanyId(req, req.body.company_id);
+  const companyId = v.id(req.body.company_id, 'company_id');
   const item      = readBody(req.body);
 
   // Check the parent exists so a bad company_id reads as a bad request rather
@@ -76,14 +68,12 @@ router.put('/:id', asyncHandler(async (req, res) => {
   const id   = v.id(req.params.id, 'Item id');
   const item = readBody(req.body);
 
-  // The scope predicate means another tenant's item is simply not matched,
-  // so it cannot be edited and its existence is not revealed.
   const { rows } = await query(
     `UPDATE items
      SET name = $1, sku = $2, unit = $3, quantity = $4, unit_price = $5, low_stock_threshold = $6
-     WHERE id = $7 AND ($8::int IS NULL OR company_id = $8)
+     WHERE id = $7
      RETURNING *`,
-    [item.name, item.sku, item.unit, item.quantity, item.unitPrice, item.threshold, id, companyScope(req)]
+    [item.name, item.sku, item.unit, item.quantity, item.unitPrice, item.threshold, id]
   );
   if (!rows[0]) throw new NotFoundError('Item not found');
   res.json(rows[0]);
@@ -93,10 +83,7 @@ router.put('/:id', asyncHandler(async (req, res) => {
 router.delete('/:id', asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Item id');
 
-  const { rows: existing } = await query(
-    'SELECT name FROM items WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
-    [id, companyScope(req)]
-  );
+  const { rows: existing } = await query('SELECT name FROM items WHERE id = $1', [id]);
   if (!existing[0]) throw new NotFoundError('Item not found');
 
   // An item that appears on an invoice cannot be removed without rewriting

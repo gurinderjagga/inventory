@@ -1,13 +1,13 @@
-const config     = require('./config');   // must load first — populates process.env
-const express    = require('express');
-const cors       = require('cors');
+const config = require('./config');   // must load first — populates process.env
+const express = require('express');
+const cors = require('cors');
 const cookieParser = require('cookie-parser');
-const path       = require('path');
-const fs         = require('fs');
+const path = require('path');
+const fs = require('fs');
 const { initDB, closeDB } = require('./database/db');
 const { ensureAdminUser, DEFAULT_ADMIN } = require('./database/seed');
 
-const app  = express();
+const app = express();
 const PORT = config.PORT;
 
 // ── CORS ─────────────────────────────────────────────────────
@@ -89,11 +89,11 @@ app.use((req, res, next) => {
 });
 
 // ── API Routes ───────────────────────────────────────────────
-app.use('/api/auth',      require('./routes/auth'));
-app.use('/api/users',     require('./routes/users'));
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/users', require('./routes/users'));
 app.use('/api/companies', require('./routes/companies'));
-app.use('/api/items',     require('./routes/items'));
-app.use('/api/invoices',  require('./routes/invoices'));
+app.use('/api/items', require('./routes/items'));
+app.use('/api/invoices', require('./routes/invoices'));
 
 // ── Unknown API Routes ───────────────────────────────────────
 // Must sit after the API routes but before the SPA fallback, so an unknown
@@ -107,7 +107,7 @@ app.use('/api', (req, res) => {
 // Development: Vite serves the frontend on :5173 and proxies /api here, so
 // there is nothing for Express to serve — say so rather than serving something
 // stale, which would look like a working app built from the wrong source.
-const reactDist  = path.join(__dirname, '..', 'frontend', 'dist');
+const reactDist = path.join(__dirname, '..', 'frontend', 'dist');
 const reactBuilt = fs.existsSync(reactDist);
 
 if (reactBuilt) {
@@ -183,7 +183,7 @@ async function start() {
     console.error('\n❌  Could not connect to the database.');
     console.error(`    ${err.message}`);
     console.error('    Check DATABASE_URL in backend/.env, then try again.\n');
-    await closeDB().catch(() => {});
+    await closeDB().catch(() => { });
     process.exit(1);
   }
 
@@ -205,7 +205,7 @@ async function start() {
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, async () => {
     console.log(`\n${signal} received — shutting down.`);
-    await closeDB().catch(() => {});
+    await closeDB().catch(() => { });
     process.exit(0);
   });
 }

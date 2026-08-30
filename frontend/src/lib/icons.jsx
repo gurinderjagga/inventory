@@ -17,7 +17,7 @@ import {
   Check, CheckCheck, CheckCircle2, X, XCircle,
   AlertTriangle, AlertCircle, Info,
   Eye, FileDown, FilePlus2, ArrowLeft, ArrowUpCircle, ChevronRight,
-  Boxes, Clock,
+  Boxes, Clock, Menu, ArrowUp, ArrowDown, ChevronsUpDown, RefreshCw, EyeOff,
 } from 'lucide-react';
 
 /* Navigation & entities */
@@ -50,6 +50,14 @@ export const IconBack       = ArrowLeft;
 export const IconUp         = ArrowUpCircle;
 export const IconChevron    = ChevronRight;
 export const IconClose      = X;
+export const IconMenu       = Menu;
+export const IconRefresh    = RefreshCw;
+export const IconHide       = EyeOff;
+
+/* Table sorting */
+export const IconSortAsc  = ArrowUp;
+export const IconSortDesc = ArrowDown;
+export const IconSortNone = ChevronsUpDown;
 
 /* Status */
 export const IconCheck    = Check;
