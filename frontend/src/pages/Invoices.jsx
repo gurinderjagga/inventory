@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
+import { listContainer, listItem } from '../lib/motion.js';
 import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
@@ -230,10 +232,12 @@ export default function Invoices() {
                 <th>Status</th><th>Date</th><th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
-            <tbody>
+            <motion.tbody variants={listContainer} initial="initial" animate="animate">
               {filtered.map(inv => (
-                <tr key={inv.id}>
-                  <td><span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text-accent)' }}>{inv.invoice_no}</span></td>
+                <motion.tr key={inv.id} variants={listItem}>
+                  {/* nowrap: an invoice number split across two lines is
+                      unreadable as an identifier */}
+                  <td><span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 500, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{inv.invoice_no}</span></td>
                   <td>{inv.company_name}</td>
                   <td style={{ color: 'var(--text-secondary)' }}>{inv.customer_name}</td>
                   <td>${parseFloat(inv.subtotal).toFixed(2)}</td>
@@ -266,9 +270,9 @@ export default function Invoices() {
                       )}
                     </div>
                   </td>
-                </tr>
+                </motion.tr>
               ))}
-            </tbody>
+            </motion.tbody>
           </table>
         </div>
       )}
@@ -387,7 +391,7 @@ export default function Invoices() {
                     <span>Tax ({taxRate}%)</span><strong style={{ color: 'var(--text-primary)' }}>${tax.toFixed(2)}</strong>
                   </div>
                 )}
-                <div style={{ display: 'flex', gap: 24, padding: '10px 16px', background: 'var(--accent-grad)', borderRadius: 8, fontSize: 15, fontWeight: 800 }}>
+                <div style={{ display: 'flex', gap: 24, padding: '10px 16px', background: 'var(--accent-grad)', color: '#fff', borderRadius: 8, fontSize: 15, fontWeight: 700 }}>
                   <span>Total</span><span>${total.toFixed(2)}</span>
                 </div>
               </div>
@@ -465,7 +469,7 @@ export default function Invoices() {
                 <span>Tax ({viewInv.tax_rate}%)</span><strong style={{ color: 'var(--text-primary)' }}>${(viewInv.total - viewInv.subtotal).toFixed(2)}</strong>
               </div>
             )}
-            <div style={{ display: 'flex', gap: 24, padding: '10px 16px', background: 'var(--accent-grad)', borderRadius: 8, fontSize: 15, fontWeight: 800 }}>
+            <div style={{ display: 'flex', gap: 24, padding: '10px 16px', background: 'var(--accent-grad)', color: '#fff', borderRadius: 8, fontSize: 15, fontWeight: 700 }}>
               <span>Total</span><span>${parseFloat(viewInv.total).toFixed(2)}</span>
             </div>
           </div>

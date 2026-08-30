@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
+import { listContainer, listItem } from '../lib/motion.js';
 import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
@@ -152,11 +154,11 @@ export default function Users() {
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
-            <tbody>
+            <motion.tbody variants={listContainer} initial="initial" animate="animate">
               {filtered.map(u => {
                 const isSelf = u.id === user?.id;
                 return (
-                  <tr key={u.id}>
+                  <motion.tr key={u.id} variants={listItem}>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <div className="user-avatar" style={{ width: 28, height: 28, fontSize: 12 }}>
@@ -194,10 +196,10 @@ export default function Users() {
                         )}
                       </div>
                     </td>
-                  </tr>
+                  </motion.tr>
                 );
               })}
-            </tbody>
+            </motion.tbody>
           </table>
         </div>
       )}

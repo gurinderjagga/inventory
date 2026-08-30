@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext.jsx';
+import { pageVariants } from '../lib/motion.js';
 import ChangePasswordModal from './ChangePasswordModal.jsx';
 
 // `adminOnly` items are hidden from company admins. This is presentation only —
@@ -63,8 +65,28 @@ export default function Layout() {
               end={item.exact}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
             >
-              <i className={`bi ${item.icon}`} />
-              <span>{!isAdmin && item.tenantLabel ? item.tenantLabel : item.label}</span>
+              {({ isActive }) => (
+                <>
+                  {/* A single shared element that slides between items rather
+                      than fading in and out on each one. */}
+                  {isActive && (
+                    <motion.span
+                      layoutId="nav-active"
+                      style={{
+                        position: 'absolute', inset: 0,
+                        background: 'var(--accent-soft)',
+                        borderRadius: 'var(--radius-sm)',
+                        zIndex: 0,
+                      }}
+                      transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.7 }}
+                    />
+                  )}
+                  <i className={`bi ${item.icon}`} style={{ position: 'relative', zIndex: 1 }} />
+                  <span style={{ position: 'relative', zIndex: 1 }}>
+                    {!isAdmin && item.tenantLabel ? item.tenantLabel : item.label}
+                  </span>
+                </>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -96,9 +118,22 @@ export default function Layout() {
           <span className="topbar-title">{pageTitle}</span>
         </header>
 
-        {/* Page content — React Router renders matched child here */}
+        {/* Page content — React Router renders matched child here.
+            Keyed on pathname so each route fades through cleanly; mode="wait"
+            lets the outgoing page finish before the next one arrives, which
+            avoids two pages briefly overlapping mid-scroll. */}
         <main className="page-content">
-          <Outlet />
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={location.pathname}
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+            >
+              <Outlet />
+            </motion.div>
+          </AnimatePresence>
         </main>
       </div>
 

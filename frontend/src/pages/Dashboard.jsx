@@ -1,18 +1,43 @@
 import { useEffect, useState } from 'react';
+import { motion, animate, useReducedMotion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { api, isAuthError } from '../api.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
+import { listContainer, listItem } from '../lib/motion.js';
 
 function KpiCard({ label, value, icon, accent }) {
   return (
-    <div className="db-kpi" style={{ '--kpi-accent': accent }}>
+    <motion.div className="db-kpi" style={{ '--kpi-accent': accent }} variants={listItem}>
       <div className="db-kpi-body">
         <div className="db-kpi-label">{label}</div>
-        <div className="db-kpi-value">{value}</div>
+        {/* Counts up from 0 so the figure registers as data arriving. */}
+        <div className="db-kpi-value"><CountUp value={value} /></div>
       </div>
       <i className={`bi ${icon} db-kpi-icon`} />
-    </div>
+    </motion.div>
   );
+}
+
+/**
+ * Animates an integer from 0 to `value`.
+ * Skipped entirely when the user prefers reduced motion, and for values large
+ * enough that ticking through them would read as noise rather than polish.
+ */
+function CountUp({ value }) {
+  const reduce = useReducedMotion();
+  const [shown, setShown] = useState(reduce ? value : 0);
+
+  useEffect(() => {
+    if (reduce || value > 9999) { setShown(value); return; }
+    const controls = animate(0, value, {
+      duration: 0.7,
+      ease: [0.16, 1, 0.3, 1],
+      onUpdate: (v) => setShown(Math.round(v)),
+    });
+    return () => controls.stop();
+  }, [value, reduce]);
+
+  return <>{shown}</>;
 }
 
 export default function Dashboard() {
@@ -74,12 +99,12 @@ export default function Dashboard() {
       )}
 
       {/* KPI strip */}
-      <div className="db-kpi-row">
+      <motion.div className="db-kpi-row" variants={listContainer} initial="initial" animate="animate">
         <KpiCard label="Companies"   value={companies.length}  icon="bi-building"           accent="var(--accent)" />
-        <KpiCard label="Stock Items" value={totalItems}        icon="bi-box-seam"           accent="rgba(255,255,255,0.1)" />
-        <KpiCard label="Low Stock"   value={totalLowStock}     icon="bi-exclamation-circle" accent={totalLowStock > 0 ? 'var(--warning)' : 'rgba(255,255,255,0.1)'} />
-        <KpiCard label="Invoices"    value={stats.totalInvoices} icon="bi-receipt"          accent="rgba(255,255,255,0.1)" />
-      </div>
+        <KpiCard label="Stock Items" value={totalItems}        icon="bi-box-seam"           accent="var(--info)" />
+        <KpiCard label="Low Stock"   value={totalLowStock}     icon="bi-exclamation-circle" accent={totalLowStock > 0 ? 'var(--warning)' : 'var(--success)'} />
+        <KpiCard label="Invoices"    value={stats.totalInvoices} icon="bi-receipt"          accent="var(--success)" />
+      </motion.div>
 
       {/* Main grid */}
       <div className="db-content-grid">
@@ -109,9 +134,9 @@ export default function Dashboard() {
                     <th>Date</th>
                   </tr>
                 </thead>
-                <tbody>
+                <motion.tbody variants={listContainer} initial="initial" animate="animate">
                   {recent.map(inv => (
-                    <tr key={inv.id}>
+                    <motion.tr key={inv.id} variants={listItem}>
                       <td className="db-mono">{inv.invoice_no}</td>
                       <td className="db-company-cell">{inv.company_name}</td>
                       <td className="db-secondary">{inv.customer_name}</td>
@@ -127,9 +152,9 @@ export default function Dashboard() {
                       <td className="db-secondary db-date">
                         {new Date(inv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                       </td>
-                    </tr>
+                    </motion.tr>
                   ))}
-                </tbody>
+                </motion.tbody>
               </table>
             </div>
           )}
@@ -157,7 +182,13 @@ export default function Dashboard() {
                     <div className="db-co-info">
                       <div className="db-co-name">{c.name}</div>
                       <div className="db-co-bar">
-                        <div className="db-co-bar-fill" style={{ width: `${pct}%`, background: color }} />
+                        <motion.div
+                          className="db-co-bar-fill"
+                          style={{ background: color }}
+                          initial={{ width: 0 }}
+                          animate={{ width: `${pct}%` }}
+                          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1], delay: 0.15 }}
+                        />
                       </div>
                     </div>
                     <div className="db-co-stat" style={{ color: low > 0 ? 'var(--warning)' : 'var(--text-muted)' }}>

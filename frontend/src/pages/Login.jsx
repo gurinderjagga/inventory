@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { cardVariants } from '../lib/motion.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
 
 export default function Login() {
@@ -34,7 +36,7 @@ export default function Login() {
 
   return (
     <div className="auth-wrapper">
-      <div className="login-card">
+      <motion.div className="login-card" variants={cardVariants} initial="initial" animate="animate">
         {/* Brand */}
         <div className="login-brand">
           <div className="login-brand-icon">📦</div>
@@ -98,7 +100,7 @@ export default function Login() {
         <div className="login-footer">
           <i className="bi bi-shield-lock" /> Secured with JWT authentication
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }

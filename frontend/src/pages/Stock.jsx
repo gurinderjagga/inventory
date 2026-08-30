@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
+import { listContainer, listItem, hoverLift } from '../lib/motion.js';
 import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
@@ -149,11 +151,12 @@ export default function Stock() {
             <p>Add companies from the Companies page first.</p>
           </div>
         ) : (
-          <div className="company-cards-grid">
+          <motion.div className="company-cards-grid" variants={listContainer} initial="initial" animate="animate">
             {companies.map(c => {
               const low = c.low_stock_count || 0;
               return (
-                <div key={c.id} className="company-card" onClick={() => selectCompany(c)} role="button" tabIndex={0}
+                <motion.div key={c.id} className="company-card" onClick={() => selectCompany(c)} role="button" tabIndex={0}
+                     variants={listItem} {...hoverLift}
                      onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && selectCompany(c)}>
                   <div className="company-card-icon"><i className="bi bi-building-fill" /></div>
                   <h3>{c.name}</h3>
@@ -173,10 +176,10 @@ export default function Stock() {
                     </div>
                   </div>
                   {low > 0 && <div style={{ marginTop: 12 }}><span className="badge badge-warning"><i className="bi bi-exclamation-triangle" /> {low} items low</span></div>}
-                </div>
+                </motion.div>
               );
             })}
-          </div>
+          </motion.div>
         )}
       </div>
     );
@@ -241,22 +244,28 @@ export default function Stock() {
                 <th>Status</th><th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
-            <tbody>
+            <motion.tbody variants={listContainer} initial="initial" animate="animate">
               {filteredItems.map(item => {
                 const isLow  = item.quantity <= item.low_stock_threshold;
                 const pct    = item.low_stock_threshold > 0
                   ? Math.min(100, (item.quantity / (item.low_stock_threshold * 3)) * 100) : 100;
                 const barClr = isLow ? 'var(--warning)' : item.quantity > item.low_stock_threshold * 2 ? 'var(--success)' : 'var(--info)';
                 return (
-                  <tr key={item.id}>
+                  <motion.tr key={item.id} variants={listItem}>
                     <td style={{ fontWeight: 600 }}>{item.name}</td>
-                    <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text-accent)' }}>{item.sku || '—'}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 500, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{item.sku || '—'}</td>
                     <td>{item.unit}</td>
                     <td>
                       <div className="stock-bar-wrap">
                         <span style={{ fontWeight: 600, minWidth: 32 }}>{item.quantity}</span>
                         <div className="stock-bar">
-                          <div className="stock-bar-fill" style={{ width: `${pct}%`, background: barClr }} />
+                          <motion.div
+                            className="stock-bar-fill"
+                            style={{ background: barClr }}
+                            initial={{ width: 0 }}
+                            animate={{ width: `${pct}%` }}
+                            transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
+                          />
                         </div>
                       </div>
                     </td>
@@ -273,10 +282,10 @@ export default function Stock() {
                         <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: item.id, name: item.name })}><i className="bi bi-trash3" /></button>
                       </div>
                     </td>
-                  </tr>
+                  </motion.tr>
                 );
               })}
-            </tbody>
+            </motion.tbody>
           </table>
         </div>
       )}

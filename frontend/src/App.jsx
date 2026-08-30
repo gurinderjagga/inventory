@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from "react-router-dom";
+import { MotionConfig } from "framer-motion";
 import { AuthProvider, useAuth } from "./contexts/AuthContext.jsx";
 import { ToastProvider } from "./contexts/ToastContext.jsx";
 import Layout from "./components/Layout.jsx";
@@ -44,8 +45,12 @@ function AdminOnly({ children }) {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <ToastProvider>
+    // reducedMotion="user" makes every Framer animation collapse to an instant
+    // state change when the OS asks for reduced motion — the CSS media query
+    // alone cannot reach JS-driven animation.
+    <MotionConfig reducedMotion="user">
+      <AuthProvider>
+        <ToastProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
 
@@ -67,7 +72,8 @@ export default function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </ToastProvider>
-    </AuthProvider>
+        </ToastProvider>
+      </AuthProvider>
+    </MotionConfig>
   );
 }

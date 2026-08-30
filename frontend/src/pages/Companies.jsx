@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
+import { listContainer, listItem } from '../lib/motion.js';
 import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
@@ -145,9 +147,9 @@ export default function Companies() {
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
-            <tbody>
+            <motion.tbody variants={listContainer} initial="initial" animate="animate">
               {filtered.map(c => (
-                <tr key={c.id}>
+                <motion.tr key={c.id} variants={listItem}>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <div className="company-avatar-icon"><i className="bi bi-building-fill" /></div>
@@ -176,9 +178,9 @@ export default function Companies() {
                       )}
                     </div>
                   </td>
-                </tr>
+                </motion.tr>
               ))}
-            </tbody>
+            </motion.tbody>
           </table>
         </div>
       )}

@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import { toastVariants } from '../lib/motion.js';
 
 const ToastContext = createContext(null);
 
@@ -21,13 +23,22 @@ const AUTO_DISMISS_MS = 4000;
 
 function ToastItem({ id, type, message, title, onRemove }) {
   return (
-    <div className={`toast toast-${type}`} onClick={() => onRemove(id)}>
+    <motion.div
+      className={`toast toast-${type}`}
+      onClick={() => onRemove(id)}
+      variants={toastVariants}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      // Collapses the gap smoothly as neighbours leave the stack.
+      layout
+    >
       <i className={`bi ${ICONS[type]} toast-icon`} />
       <div className="toast-content">
         <div className="toast-title">{title || TITLES[type]}</div>
         {message && <div className="toast-msg">{message}</div>}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -91,9 +102,11 @@ export function ToastProvider({ children }) {
       {children}
       {toastRoot && createPortal(
         <div id="toast-container" aria-live="polite">
-          {toasts.map(t => (
-            <ToastItem key={t.id} {...t} onRemove={removeToast} />
-          ))}
+          <AnimatePresence initial={false}>
+            {toasts.map(t => (
+              <ToastItem key={t.id} {...t} onRemove={removeToast} />
+            ))}
+          </AnimatePresence>
         </div>,
         toastRoot
       )}
