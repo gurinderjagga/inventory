@@ -420,3 +420,88 @@ test('an item that already has a movement is left alone by the backfill', async 
   );
   assert.equal(movements.length, 1);
 });
+
+/* ── Phase 4a+4b: numbering series and the tax engine ────────────────────── */
+
+async function restorePreTaxEngineSchema() {
+  await query(`
+    ALTER TABLE invoices
+      DROP COLUMN IF EXISTS place_of_supply_state,
+      DROP COLUMN IF EXISTS supplier_scheme,
+      DROP COLUMN IF EXISTS cgst_total,
+      DROP COLUMN IF EXISTS sgst_total,
+      DROP COLUMN IF EXISTS igst_total,
+      DROP COLUMN IF EXISTS round_off
+  `);
+  await query(`
+    ALTER TABLE invoice_line_items
+      DROP COLUMN IF EXISTS gst_rate,
+      DROP COLUMN IF EXISTS cgst_amount,
+      DROP COLUMN IF EXISTS sgst_amount,
+      DROP COLUMN IF EXISTS igst_amount
+  `);
+}
+
+test('the migration adds the tax-engine columns to invoices and invoice_line_items', async () => {
+  await restorePreTaxEngineSchema();
+
+  await applySchemaUpdates();
+
+  const invoiceCols = await tableColumns('invoices');
+  for (const col of ['place_of_supply_state', 'supplier_scheme', 'cgst_total', 'sgst_total', 'igst_total', 'round_off']) {
+    assert.ok(invoiceCols.includes(col), `invoices.${col} should exist`);
+  }
+  const lineCols = await tableColumns('invoice_line_items');
+  for (const col of ['gst_rate', 'cgst_amount', 'sgst_amount', 'igst_amount']) {
+    assert.ok(lineCols.includes(col), `invoice_line_items.${col} should exist`);
+  }
+});
+
+test('a company with no GSTIN cannot have tax on an invoice (database CHECK)', async () => {
+  await restorePreTaxEngineSchema();
+  await applySchemaUpdates();
+
+  const { rows: [company] } = await query(`INSERT INTO companies (name) VALUES ('No GSTIN Tax Co') RETURNING id`);
+
+  await assert.rejects(
+    query(
+      `INSERT INTO invoices (invoice_no, company_id, customer_name, cgst_total)
+       VALUES ('INV-TAX-2', $1, 'Cust', 9)`,
+      [company.id]
+    ),
+    /invoices_tax_requires_gstin_ck/
+  );
+});
+
+test('a composition-scheme company cannot have tax on an invoice (database CHECK)', async () => {
+  await restorePreTaxEngineSchema();
+  await applySchemaUpdates();
+
+  const { rows: [company] } = await query(
+    `INSERT INTO companies (name, gstin, scheme) VALUES ('Composition Tax Co', '07FGHIJ5678K1Z2', 'composition') RETURNING id`
+  );
+
+  await assert.rejects(
+    query(
+      `INSERT INTO invoices (invoice_no, company_id, customer_name, supplier_gstin, supplier_scheme, sgst_total)
+       VALUES ('INV-TAX-3', $1, 'Cust', '07FGHIJ5678K1Z2', 'composition', 9)`,
+      [company.id]
+    ),
+    /invoices_tax_requires_regular_scheme_ck/
+  );
+});
+
+test('running the tax-engine migration again is a no-op', async () => {
+  await restorePreTaxEngineSchema();
+  await applySchemaUpdates();
+  const first = {
+    invoices: await tableColumns('invoices'),
+    lineItems: await tableColumns('invoice_line_items'),
+  };
+
+  await applySchemaUpdates();
+  await applySchemaUpdates();
+
+  assert.deepEqual(await tableColumns('invoices'), first.invoices);
+  assert.deepEqual(await tableColumns('invoice_line_items'), first.lineItems);
+});

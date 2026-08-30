@@ -8,15 +8,39 @@ const v = require('../lib/validate');
 const money = require('../lib/money');
 const { formatAmount } = require('../lib/currency');
 const { applyMovement } = require('../lib/stockLedger');
+const gst = require('../lib/gst');
 
 const router = express.Router();
 router.use(authMiddleware);
 
+/** A draft's placeholder number — replaced with a real one at finalize. */
 function generateInvoiceNo() {
   const now = new Date();
   const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
   const randPart = Math.random().toString(36).substring(2, 6).toUpperCase();
   return `INV-${datePart}-${randPart}`;
+}
+
+/**
+ * Allocate the next sequential number in a company's series, atomically.
+ *
+ * A single `INSERT ... ON CONFLICT DO UPDATE` rather than the more common
+ * `SELECT ... FOR UPDATE` then `UPDATE` pair — Postgres serializes concurrent
+ * upserts on the same conflict key via the same row-level locking a separate
+ * SELECT FOR UPDATE would need, so this gets the same race-safety in one
+ * statement instead of two.
+ */
+async function allocateInvoiceNumber(client, companyId, documentType = 'invoice') {
+  const fy = gst.financialYear();
+  const { rows } = await client.query(
+    `INSERT INTO invoice_number_series (company_id, document_type, financial_year, next_number)
+     VALUES ($1, $2, $3, 1)
+     ON CONFLICT (company_id, document_type, financial_year)
+     DO UPDATE SET next_number = invoice_number_series.next_number + 1
+     RETURNING next_number`,
+    [companyId, documentType, fy]
+  );
+  return gst.formatInvoiceNumber(documentType, fy, rows[0].next_number);
 }
 
 /**
@@ -46,37 +70,70 @@ async function normalizeLines(companyId, line_items) {
     };
   });
 
-  // Use the stored name so a client cannot mislabel a line.
+  // Use the stored name and GST rate so a client cannot mislabel a line or
+  // manufacture its own tax rate — both come from the database, never the
+  // request.
   const ids = [...new Set(lines.map(l => l.itemId))];
   const { rows: found } = await query(
-    'SELECT id, name FROM items WHERE id = ANY($1::int[]) AND company_id = $2',
+    'SELECT id, name, gst_rate FROM items WHERE id = ANY($1::int[]) AND company_id = $2',
     [ids, companyId]
   );
-  const nameById = new Map(found.map(r => [r.id, r.name]));
-  const missing  = ids.filter(id => !nameById.has(id));
+  const byId  = new Map(found.map(r => [r.id, r]));
+  const missing  = ids.filter(id => !byId.has(id));
   if (missing.length) {
     throw new ValidationError(
       `No such item${missing.length === 1 ? '' : 's'} for this company: ${missing.join(', ')}`
     );
   }
 
-  return lines.map(l => ({ ...l, itemName: nameById.get(l.itemId) }));
+  return lines.map(l => ({
+    ...l,
+    itemName: byId.get(l.itemId).name,
+    gstRate:  byId.get(l.itemId).gst_rate,
+  }));
 }
 
 /**
- * Money totals for a set of normalised lines.
+ * Money and tax totals for a set of normalised lines.
  *
- * Every step goes through lib/money.js rather than JavaScript arithmetic: the
- * old version computed `quantity * unitPrice` on doubles, so a three-line
- * invoice could store a total a paisa away from the sum of its own printed
- * lines. The subtotal is the sum of the ROUNDED line totals, deliberately —
- * that is the figure each line shows, and an invoice whose lines do not add up
- * to its total is indefensible in front of an auditor.
+ * Every step goes through lib/money.js and lib/gst.js rather than JavaScript
+ * arithmetic: the pre-Phase-4 version computed `quantity * unitPrice` on
+ * doubles, so a three-line invoice could store a total a paisa away from the
+ * sum of its own printed lines. The subtotal is the sum of the ROUNDED line
+ * totals, deliberately — that is the figure each line shows, and an invoice
+ * whose lines do not add up to its total is indefensible in front of an
+ * auditor.
+ *
+ * Tax runs per line at that line's own item's GST rate (never a manual,
+ * invoice-wide rate) only when `chargesTax` — a company with no GSTIN, or on
+ * the composition scheme, never charges tax no matter what its items say.
+ * `intraState` picks CGST+SGST vs IGST for every line alike, since place of
+ * supply is a property of the invoice (the customer's state), not the item.
  */
-function invoiceTotals(lines, taxRate) {
-  const subtotal = money.sum(lines.map(l => money.lineTotal(l.quantity, l.unitPrice)));
-  const tax      = money.taxOn(subtotal, taxRate);
-  return { subtotal, total: money.sum([subtotal, tax]) };
+function invoiceTotals(lines, { chargesTax, intraState }) {
+  const lineTaxes = lines.map(l => {
+    const lineTotal = money.lineTotal(l.quantity, l.unitPrice);
+    return chargesTax
+      ? gst.computeLineTax(lineTotal, l.gstRate, intraState)
+      : { cgst: '0.00', sgst: '0.00', igst: '0.00' };
+  });
+
+  const subtotal   = money.sum(lines.map(l => money.lineTotal(l.quantity, l.unitPrice)));
+  const cgstTotal  = money.sum(lineTaxes.map(t => t.cgst));
+  const sgstTotal  = money.sum(lineTaxes.map(t => t.sgst));
+  const igstTotal  = money.sum(lineTaxes.map(t => t.igst));
+  const preRound   = money.sum([subtotal, cgstTotal, sgstTotal, igstTotal]);
+
+  // Round-to-the-nearest-rupee is a GST invoicing convention that exists
+  // *because* there is tax to round around — an untaxed invoice (no GSTIN,
+  // composition scheme, or every line nil-rated) stays exact to the paisa
+  // like every other total in this app, rather than rounding for its own sake.
+  const hasTax = !money.dec(cgstTotal).plus(sgstTotal).plus(igstTotal).isZero();
+  const { total, roundOff } = hasTax
+    ? gst.roundToRupee(preRound)
+    : { total: preRound, roundOff: '0.00' };
+
+  return { subtotal, cgstTotal, sgstTotal, igstTotal, roundOff, total, lineTaxes };
 }
 
 /**
@@ -90,17 +147,27 @@ function assertIsDraft(status, action) {
   throw new ConflictError(`This invoice has been ${already} and can no longer be ${action}.`);
 }
 
-/** Write the line items of an invoice, replacing whatever is already there. */
-async function writeLines(client, invoiceId, lines) {
+/**
+ * Write the line items of an invoice, replacing whatever is already there.
+ * `lineTaxes` is `invoiceTotals`'s per-line CGST/SGST/IGST breakdown, in the
+ * same order as `lines` — computed once and threaded through rather than
+ * recomputed here, so the totals and the stored lines can never disagree.
+ */
+async function writeLines(client, invoiceId, lines, lineTaxes) {
   await client.query('DELETE FROM invoice_line_items WHERE invoice_id = $1', [invoiceId]);
-  for (const l of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const t = lineTaxes[i];
     await client.query(
-      `INSERT INTO invoice_line_items (invoice_id, item_id, item_name, quantity, unit_price, line_total)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO invoice_line_items
+         (invoice_id, item_id, item_name, quantity, unit_price, line_total,
+          gst_rate, cgst_amount, sgst_amount, igst_amount)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         invoiceId, l.itemId, l.itemName,
         money.quantity(l.quantity), money.money(l.unitPrice),
         money.lineTotal(l.quantity, l.unitPrice),
+        l.gstRate, t.cgst, t.sgst, t.igst,
       ]
     );
   }
@@ -172,71 +239,95 @@ const isBlank = (val) => val === undefined || val === null || val === '';
 async function resolveCustomer(companyId, { customer_id, customer_name, customer_email }) {
   let name = v.optionalString(customer_name);
   let customerId = null;
+  let stateCode  = null;
 
   if (!isBlank(customer_id)) {
     customerId = v.id(customer_id, 'customer_id');
     const { rows } = await query(
-      'SELECT id, name FROM customers WHERE id = $1 AND company_id = $2',
+      'SELECT id, name, state_code FROM customers WHERE id = $1 AND company_id = $2',
       [customerId, companyId]
     );
     if (!rows[0]) throw new ValidationError('No such customer for this company');
     name = name || rows[0].name;
+    stateCode = rows[0].state_code;
   }
 
   if (!name) throw new ValidationError('customer_name is required');
-  return { customerId, name, email: v.optionalString(customer_email) };
+  return { customerId, name, email: v.optionalString(customer_email), stateCode };
 }
 
 /**
  * Freeze the supplier's own GST identity onto the invoice at issue — a company
- * that later registers, or moves state, must not retroactively change a
- * document already sent. Also enforces that only a registered supplier may
- * charge tax at all (Section 122); the database's own CHECK backs this up.
+ * that later registers, or moves state or scheme, must not retroactively
+ * change a document already sent.
  */
-function snapshotSupplier(company, taxRate) {
-  if (taxRate > 0 && !company.gstin) {
-    throw new ValidationError('Cannot charge tax without a supplier GSTIN');
-  }
+function snapshotSupplier(company) {
   return {
     gstin:     company.gstin || null,
     name:      company.legal_name || company.name,
     address:   company.address || null,
     stateCode: company.state_code || null,
+    scheme:    company.scheme,
   };
+}
+
+/**
+ * Decide whether this invoice charges GST at all, and if so, on which side of
+ * the state line the customer sits.
+ *
+ * Only a company with a GSTIN on the `regular` scheme ever charges tax
+ * (Section 122 makes charging it without registration an offence, and a
+ * composition dealer is barred from charging it at all) — regardless of what
+ * rate any item carries. Place of supply is the customer's state, which is
+ * why a tax-charging company can only bill a saved customer that has one.
+ */
+function taxContext(company, customer) {
+  const registered = !!company.gstin && company.scheme === 'regular';
+  if (!registered) return { chargesTax: false, intraState: null };
+  if (!customer.stateCode) {
+    throw new ValidationError(
+      'A customer with a state on file is required to bill a GST-registered company — ' +
+      'pick a saved customer rather than typing a name.'
+    );
+  }
+  return { chargesTax: true, intraState: customer.stateCode === company.state_code };
 }
 
 // POST /api/invoices  — create draft invoice (atomic via transaction)
 router.post('/', asyncHandler(async (req, res) => {
-  const { company_id, notes, tax_rate, line_items } = req.body;
+  const { company_id, notes, line_items } = req.body;
 
-  const companyId   = v.id(company_id, 'company_id');
-  const taxRate     = v.nonNegativeNumber(tax_rate, 'Tax rate', { fallback: 0 });
+  const companyId = v.id(company_id, 'company_id');
 
   const { rows: company } = await query('SELECT * FROM companies WHERE id = $1', [companyId]);
   if (!company[0]) throw new NotFoundError('Company not found');
 
   const customer = await resolveCustomer(companyId, req.body);
-  const supplier = snapshotSupplier(company[0], taxRate);
-  const lines = await normalizeLines(companyId, line_items);
-  const { subtotal, total } = invoiceTotals(lines, taxRate);
+  const supplier = snapshotSupplier(company[0]);
+  const tax      = taxContext(company[0], customer);
+  const lines    = await normalizeLines(companyId, line_items);
+  const { subtotal, cgstTotal, sgstTotal, igstTotal, roundOff, total, lineTaxes } =
+    invoiceTotals(lines, tax);
 
   const invoice = await runTransaction(async (client) => {
     const { rows } = await client.query(
       `INSERT INTO invoices
          (invoice_no, company_id, customer_id, customer_name, customer_email, notes,
-          subtotal, tax_rate, total, status,
-          supplier_gstin, supplier_name, supplier_address, supplier_state_code)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', $10, $11, $12, $13)
+          subtotal, cgst_total, sgst_total, igst_total, round_off, total, status,
+          supplier_gstin, supplier_name, supplier_address, supplier_state_code, supplier_scheme,
+          place_of_supply_state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', $13, $14, $15, $16, $17, $18)
        RETURNING *`,
       [
         generateInvoiceNo(), companyId, customer.customerId, customer.name,
         customer.email, v.optionalString(notes),
-        subtotal, taxRate, total,
-        supplier.gstin, supplier.name, supplier.address, supplier.stateCode,
+        subtotal, cgstTotal, sgstTotal, igstTotal, roundOff, total,
+        supplier.gstin, supplier.name, supplier.address, supplier.stateCode, supplier.scheme,
+        customer.stateCode,
       ]
     );
     const created = rows[0];
-    await writeLines(client, created.id, lines);
+    await writeLines(client, created.id, lines, lineTaxes);
     return created;
   });
 
@@ -251,9 +342,7 @@ router.post('/', asyncHandler(async (req, res) => {
 // would orphan every line item against another tenant's stock.
 router.put('/:id', asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Invoice id');
-  const { notes, tax_rate, line_items } = req.body;
-
-  const taxRate    = v.nonNegativeNumber(tax_rate, 'Tax rate', { fallback: 0 });
+  const { notes, line_items } = req.body;
 
   const { rows: existing } = await query(
     'SELECT id, company_id, status FROM invoices WHERE id = $1',
@@ -263,15 +352,15 @@ router.put('/:id', asyncHandler(async (req, res) => {
   if (!current) throw new NotFoundError('Invoice not found');
   assertIsDraft(current.status, 'edited');
 
-  // The company itself is immutable on edit, but the GSTIN-vs-tax rule is
-  // re-checked here too: tax_rate can change on a draft, and the supplier
-  // snapshot taken at creation must still justify it.
+  // The company itself is immutable on edit, but tax is re-derived from
+  // scratch here too: the customer or line items can change on a draft, and
+  // both feed the tax engine.
   const { rows: company } = await query('SELECT * FROM companies WHERE id = $1', [current.company_id]);
-  snapshotSupplier(company[0], taxRate);
-
   const customer = await resolveCustomer(current.company_id, req.body);
-  const lines = await normalizeLines(current.company_id, line_items);
-  const { subtotal, total } = invoiceTotals(lines, taxRate);
+  const tax      = taxContext(company[0], customer);
+  const lines    = await normalizeLines(current.company_id, line_items);
+  const { subtotal, cgstTotal, sgstTotal, igstTotal, roundOff, total, lineTaxes } =
+    invoiceTotals(lines, tax);
 
   const invoice = await runTransaction(async (client) => {
     // Re-check the status under a row lock: a concurrent finalize must not be
@@ -286,15 +375,16 @@ router.put('/:id', asyncHandler(async (req, res) => {
     const { rows } = await client.query(
       `UPDATE invoices
        SET customer_id = $1, customer_name = $2, customer_email = $3, notes = $4,
-           subtotal = $5, tax_rate = $6, total = $7, updated_at = now()
-       WHERE id = $8
+           subtotal = $5, cgst_total = $6, sgst_total = $7, igst_total = $8,
+           round_off = $9, total = $10, place_of_supply_state = $11, updated_at = now()
+       WHERE id = $12
        RETURNING *`,
       [
         customer.customerId, customer.name, customer.email, v.optionalString(notes),
-        subtotal, taxRate, total, id,
+        subtotal, cgstTotal, sgstTotal, igstTotal, roundOff, total, customer.stateCode, id,
       ]
     );
-    await writeLines(client, id, lines);
+    await writeLines(client, id, lines, lineTaxes);
     return rows[0];
   });
 
@@ -320,6 +410,11 @@ router.post('/:id/finalize', asyncHandler(async (req, res) => {
     if (invoice.status === 'finalized') {
       throw new ConflictError('This invoice has already been finalized');
     }
+    // Reversed is terminal too — re-finalizing would deduct stock a second
+    // time for a sale the ledger already says was undone.
+    if (invoice.status === 'reversed') {
+      throw new ConflictError('This invoice has been reversed and can no longer be finalized.');
+    }
 
     const { rows: lineItems } = await client.query(
       'SELECT * FROM invoice_line_items WHERE invoice_id = $1',
@@ -338,9 +433,15 @@ router.post('/:id/finalize', asyncHandler(async (req, res) => {
       });
     }
 
+    // The real invoice number is taken here, at issue — not at draft
+    // creation, or every abandoned draft would burn a number out of the
+    // series. Replaces the random placeholder generateInvoiceNo() stamped it
+    // with.
+    const invoiceNo = await allocateInvoiceNumber(client, invoice.company_id);
+
     const { rows } = await client.query(
-      `UPDATE invoices SET status = 'finalized' WHERE id = $1 RETURNING *`,
-      [id]
+      `UPDATE invoices SET status = 'finalized', invoice_no = $2 WHERE id = $1 RETURNING *`,
+      [id, invoiceNo]
     );
     return rows[0];
   });
@@ -498,7 +599,27 @@ router.get('/:id/pdf', asyncHandler(async (req, res) => {
   doc.fillColor('#1e293b').text(formatAmount(invoice.subtotal), colX[3], y, { width: colW[3], align: 'right' });
   y += 16;
 
-  if (invoice.tax_rate > 0) {
+  // New-engine invoices carry their own CGST/SGST/IGST/round-off columns;
+  // pre-Phase-4 invoices only ever had a flat tax_rate, which this falls back
+  // to so they still render the tax they actually charged.
+  const hasNewTax = invoice.cgst_total > 0 || invoice.sgst_total > 0 || invoice.igst_total > 0;
+  if (hasNewTax) {
+    const rows = [
+      ['CGST:', invoice.cgst_total],
+      ['SGST:', invoice.sgst_total],
+      ['IGST:', invoice.igst_total],
+    ].filter(([, amt]) => amt > 0);
+    for (const [label, amt] of rows) {
+      doc.fillColor('#64748b').text(label, 350, y, { width: 105, align: 'right' });
+      doc.fillColor('#1e293b').text(formatAmount(amt), colX[3], y, { width: colW[3], align: 'right' });
+      y += 16;
+    }
+    if (invoice.round_off != 0) {
+      doc.fillColor('#64748b').text('Round Off:', 350, y, { width: 105, align: 'right' });
+      doc.fillColor('#1e293b').text(formatAmount(invoice.round_off), colX[3], y, { width: colW[3], align: 'right' });
+      y += 16;
+    }
+  } else if (invoice.tax_rate > 0) {
     const taxAmt = invoice.total - invoice.subtotal;
     doc.fillColor('#64748b').text(`Tax (${invoice.tax_rate}%):`, 350, y, { width: 105, align: 'right' });
     doc.fillColor('#1e293b').text(formatAmount(taxAmt), colX[3], y, { width: colW[3], align: 'right' });

@@ -75,13 +75,16 @@ async function createDraft(item, overrides = {}) {
 test('finalizing logs an invoice_finalize movement', async () => {
   const item = await createItem(company.id, { quantity: 10 });
   const draft = await createDraft(item);
-  await a.post(`/api/invoices/${draft.body.id}/finalize`);
+  const finalized = await a.post(`/api/invoices/${draft.body.id}/finalize`);
 
   const movements = await movementsOf(item.id);
   assert.equal(movements.length, 1);
   assert.equal(movements[0].reason, 'invoice_finalize');
   assert.equal(Number(movements[0].quantity_delta), -2);
-  assert.equal(movements[0].invoice_no, draft.body.invoice_no);
+  // The invoice_no changes at finalize (Phase 4a assigns the real sequential
+  // number here), so the movement's reference is checked against the
+  // finalized invoice, not the draft's placeholder.
+  assert.equal(movements[0].invoice_no, finalized.body.invoice.invoice_no);
 });
 
 test('insufficient stock is still refused with the same message shape', async () => {

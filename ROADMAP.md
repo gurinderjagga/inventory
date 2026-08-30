@@ -4,7 +4,7 @@ Taking StockFlow from working software to a statutory Indian GST invoicing
 system. Ten improvements, sequenced into six phases by what actually blocks
 what.
 
-**Status:** Phases 0–3 complete · Phase 4 next
+**Status:** Phases 0–3 complete · Phase 4 in progress (4a+4b done; 4c–4e next)
 
 | | Phase | Size | Status |
 | --- | --- | --- | --- |
@@ -12,7 +12,7 @@ what.
 | 1 | Exact money | S | ✅ **Complete** |
 | 2 | The records a tax invoice needs | M | ✅ **Complete** |
 | 3 | Stock you can audit | L | ✅ **Complete** |
-| 4 | GST compliance — documents, not returns | L | ⬜ Not started |
+| 4 | GST compliance — documents, not returns | L | 🟡 In progress — 4a+4b done, 4c–4e next |
 | 5 | Scale and operations | M | ⬜ Not started |
 
 Deferred by request: **CI**. The Phase 0 test suite is what makes it worth
@@ -46,7 +46,7 @@ than internal records.
 | 4 | Stock movement ledger | 3 | ✅ |
 | 5 | Inbound / goods received | 3 | ✅ |
 | 6 | Customers as entities | 2 | ✅ |
-| 7 | GST compliance | 2 + 4 | 🟡 Partial — Phase 2's document fields done, Phase 4's tax engine pending |
+| 7 | GST compliance | 2 + 4 | 🟡 Partial — Phase 2's document fields, numbering (4a) and the tax engine (4b) done; documents (4c/4d) and export (4e) pending |
 | 8 | Security hardening | 0 + 5 | 🟡 Partial — throttles and headers done, audit log pending |
 | 9 | Server-side pagination | 5 | ⬜ |
 | 10 | Smaller items | 2 + 5 | 🟡 Partial — error boundary and archive/active flags done |
@@ -310,9 +310,9 @@ matter which one the database happened to run first.
 
 ---
 
-## ⬜ Phase 4 — GST compliance
+## 🟡 Phase 4 — GST compliance
 
-*The phase the rest exists to support.* **Size: L**
+*The phase the rest exists to support.* **Size: L — 4a+4b complete, 4c–4e next.**
 
 Returns are filed outside this system, so the reporting layer is out of scope.
 The document layer is not. An invoice is a legal document the moment it leaves
@@ -341,29 +341,50 @@ correctly. The UI should not show a tax-rate field it will refuse to honour, and
 the API should reject a non-zero rate rather than silently zero it, so a
 misconfigured integration is loud instead of quietly wrong.
 
-- [ ] **4a · Numbering series, one per company** — each company issues under its
+- [x] **4a · Numbering series, one per company** — each company issues under its
       own GSTIN, so each keeps its own counter: sequential per financial year
       (1 April – 31 March), within 16 characters, alphanumeric plus `/` and
       `-`, and a separate series per document type. A property of the invoice,
       not of the return, so filing elsewhere does not remove it.
-      *Mechanics:* a counter row per (company, document type, financial year),
-      allocated inside the invoice transaction under `SELECT … FOR UPDATE` — the
-      same locking pattern finalize already uses. Sequential means the number is
-      taken at issue, not at draft, or every abandoned draft leaves a gap.
+      *Mechanics:* a counter row per (company, document type, financial year)
+      in the new `invoice_number_series` table, allocated inside finalize's
+      existing transaction via a single atomic `INSERT ... ON CONFLICT DO
+      UPDATE` — simpler than the originally planned `SELECT … FOR UPDATE` and
+      equally race-safe, since Postgres serializes concurrent upserts on the
+      same key through the same row-level locking either approach needs.
+      Sequential means the number is taken at issue (finalize), not at draft —
+      a draft keeps the old random `INV-YYYYMMDD-XXXX` placeholder shape, so an
+      abandoned draft never burns a real number.
       *Cutover:* existing `INV-YYYYMMDD-<random>` numbers are not sequential and
-      cannot be retro-fitted. Old invoices keep their numbers; each company
-      starts a new series.
-- [ ] **4b · Tax engine** — runs only for a company with a GSTIN, and only on the
-      regular scheme. The supplier side is read from the invoice’s own company:
-      its state versus the customer’s place of supply decides CGST + SGST
-      (intra-state) or IGST (inter-state). Tax computed per line at the item’s
-      own rate, giving taxable value and tax amount per head, with the invoice
-      total rounded to the nearest rupee on an explicit round-off line.
-      Supplier GSTIN, name, address and state are **snapshotted onto the invoice**
-      at issue — a company that later registers, or moves state, must not
-      retroactively change documents already sent.
+      were not retro-fitted. Old invoices keep their numbers; each company
+      starts a new series from its next finalize.
+- [x] **4b · Tax engine** — runs only for a company with a GSTIN, and only on the
+      regular scheme (`lib/gst.js` + `routes/invoices.js`'s `taxContext`).
+      Place of supply is the billed customer's state, which is why a
+      tax-charging company can no longer invoice a manual-entry name — it must
+      bill a saved `customers` row that has a state on file. Same state as the
+      supplier splits into CGST + SGST, computed **independently at half the
+      item's own rate each** (not the full tax divided by two, which can be a
+      paisa off); a different state charges IGST in full. Tax runs per line at
+      that line's own item's `gst_rate` — the old single, manual, invoice-wide
+      "Tax Rate (%)" field is gone entirely, both from the API and the UI.
+      The invoice total rounds to the nearest rupee **only when there is
+      actual tax to round around** — an untaxed invoice, or one whose items
+      are all nil-rated, stays exact to the paisa like everything else in this
+      app — with the difference shown on an explicit round-off line.
+      Supplier GSTIN, legal name, address, state **and scheme** are
+      snapshotted onto the invoice at issue (two new database CHECKs enforce
+      both: no tax without a GSTIN, and no tax outside the regular scheme,
+      each validated immediately since every row's tax columns default to
+      zero) — a company that later registers, changes scheme, or moves state
+      must not retroactively change a document already sent.
       *Cutover:* a company acquiring a GSTIN starts charging tax from that point
       forward. Invoices already issued stay untaxed, and are correct that way.
+      *Deferred to 4d:* the PDF only got the minimal fix needed to display the
+      new CGST/SGST/IGST/round-off breakdown correctly (falling back to the
+      old flat-rate display for pre-Phase-4 invoices) — the three-variant
+      compliant redesign (HSN/UQC table, totals in words, signature block) is
+      still 4d's job.
 - [ ] **4c · Credit and debit notes** — Section 34 documents with their own
       series, linked to the original invoice, reversing stock through the Phase 3
       ledger. Completes item 3.

@@ -28,7 +28,51 @@ const toNum = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const EMPTY_INV_FORM = { company_id: '', customer_id: '', customer_name: '', customer_email: '', notes: '', tax_rate: '0' };
+const EMPTY_INV_FORM = { company_id: '', customer_id: '', customer_name: '', customer_email: '', notes: '' };
+
+/**
+ * Client-side mirror of the server's tax engine (routes/invoices.js), for a
+ * live preview only — the server recomputes authoritatively on save, the
+ * same "approximate preview" precedent already established for the subtotal.
+ *
+ * Only a company with a GSTIN on the `regular` scheme ever charges tax, and
+ * only against a customer with a state on file (place of supply). CGST/SGST
+ * are each computed at half the item's own rate — not the full-rate tax
+ * divided by two — to match the server's paisa-exact behaviour.
+ */
+function computeTax(lines, company, customer, companyItems) {
+  const chargesTax = !!(company?.gstin && company.scheme === 'regular');
+  const needsCustomerState = chargesTax;
+  const hasCustomerState = !!customer?.state_code;
+  const intraState = chargesTax && hasCustomerState && customer.state_code === company.state_code;
+
+  const itemById = new Map(companyItems.map(i => [String(i.id), i]));
+  let subtotal = 0, cgst = 0, sgst = 0, igst = 0;
+
+  for (const l of lines) {
+    const lineTotal = toNum(l.quantity) * toNum(l.unit_price);
+    subtotal += lineTotal;
+    if (!chargesTax || !hasCustomerState) continue;
+    const rate = Number(itemById.get(String(l.item_id))?.gst_rate) || 0;
+    if (!rate) continue;
+    if (intraState) {
+      cgst += lineTotal * (rate / 2 / 100);
+      sgst += lineTotal * (rate / 2 / 100);
+    } else {
+      igst += lineTotal * (rate / 100);
+    }
+  }
+
+  const preRound = subtotal + cgst + sgst + igst;
+  // Rounding to the nearest rupee happens because there is tax to round
+  // around — an invoice with no actual tax (0% items, or no tax charged at
+  // all) stays exact, matching the server (routes/invoices.js).
+  const hasTax = cgst > 0 || sgst > 0 || igst > 0;
+  const total = hasTax ? Math.round(preRound) : preRound;
+  const roundOff = total - preRound;
+
+  return { chargesTax, needsCustomerState, hasCustomerState, intraState, subtotal, cgst, sgst, igst, roundOff, total };
+}
 
 /** How each sortable column reads its value out of an invoice row. */
 const SORT_COLUMNS = {
@@ -201,7 +245,6 @@ export default function Invoices() {
         customer_name:  inv.customer_name || '',
         customer_email: inv.customer_email || '',
         notes:          inv.notes || '',
-        tax_rate:       String(inv.tax_rate ?? 0),
       };
       const startLines = inv.line_items.map(li => ({
         item_id:    String(li.item_id),
@@ -310,10 +353,9 @@ export default function Invoices() {
   };
 
   /* ── Totals ─────────────────────────────────────────── */
-  const subtotal = lines.reduce((s, l) => s + toNum(l.quantity) * toNum(l.unit_price), 0);
-  const taxRate  = parseFloat(invForm.tax_rate) || 0;
-  const tax      = subtotal * (taxRate / 100);
-  const total    = subtotal + tax;
+  const selectedCompany  = companies.find(c => String(c.id) === invForm.company_id);
+  const selectedCustomer = customerOptions.find(c => String(c.id) === invForm.customer_id);
+  const tax = computeTax(lines, selectedCompany, selectedCustomer, companyItems);
 
   /* ── Stock feasibility, recomputed as the user types ── */
   const { requested, shortfalls } = stockCheck(lines, companyItems);
@@ -334,6 +376,10 @@ export default function Invoices() {
     if (lines.length === 0) { setCreateErr('Add at least one line item.'); return; }
     if (lines.some(l => !l.item_id)) { setCreateErr('All line items must have an item selected.'); return; }
     if (lines.some(l => toNum(l.quantity) <= 0)) { setCreateErr('All quantities must be greater than 0.'); return; }
+    if (tax.needsCustomerState && !tax.hasCustomerState) {
+      setCreateErr('This company is GST-registered — pick a saved customer with a state on file, rather than a manual name, so tax can be computed.');
+      return;
+    }
     if (shortfalls.size > 0) {
       const [first] = [...shortfalls.values()];
       setCreateErr(
@@ -353,7 +399,6 @@ export default function Invoices() {
         customer_name:  invForm.customer_name.trim(),
         customer_email: invForm.customer_email.trim() || null,
         notes:          invForm.notes.trim() || null,
-        tax_rate:       taxRate,
         line_items:     lines.map(l => ({
           item_id:    Number(l.item_id),
           item_name:  l.item_name,
@@ -638,11 +683,18 @@ export default function Invoices() {
             <label>Customer Email</label>
             <input type="email" placeholder="customer@email.com" {...fld('customer_email')} />
           </div>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label>Tax Rate (%)</label>
-            <input type="number" min="0" max="100" step="0.5" placeholder="0" {...fld('tax_rate')} />
-          </div>
         </div>
+        {selectedCompany && (
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: -8, marginBottom: 16 }}>
+            {tax.chargesTax
+              ? (tax.hasCustomerState
+                  ? `GST applies, computed per item — ${tax.intraState ? 'CGST + SGST (same state)' : 'IGST (different state)'}.`
+                  : 'GST applies — select a customer with a state on file to compute tax.')
+              : !selectedCompany.gstin
+                ? 'No GST — this company is not registered.'
+                : 'No GST — this company is on the composition scheme.'}
+          </p>
+        )}
         <div className="form-group">
           <label>Notes (optional)</label>
           <textarea rows={2} placeholder="Payment terms, special instructions…" {...fld('notes')} />
@@ -772,11 +824,20 @@ export default function Invoices() {
             {/* Totals */}
             {lines.length > 0 && (
               <div className="totals">
-                <div className="totals-row"><span>Subtotal</span><span className="totals-val">{formatCurrency(subtotal)}</span></div>
-                {taxRate > 0 && (
-                  <div className="totals-row"><span>Tax ({taxRate}%)</span><span className="totals-val">{formatCurrency(tax)}</span></div>
+                <div className="totals-row"><span>Subtotal</span><span className="totals-val">{formatCurrency(tax.subtotal)}</span></div>
+                {tax.cgst > 0 && (
+                  <div className="totals-row"><span>CGST</span><span className="totals-val">{formatCurrency(tax.cgst)}</span></div>
                 )}
-                <div className="totals-row grand"><span>Total</span><span className="totals-val">{formatCurrency(total)}</span></div>
+                {tax.sgst > 0 && (
+                  <div className="totals-row"><span>SGST</span><span className="totals-val">{formatCurrency(tax.sgst)}</span></div>
+                )}
+                {tax.igst > 0 && (
+                  <div className="totals-row"><span>IGST</span><span className="totals-val">{formatCurrency(tax.igst)}</span></div>
+                )}
+                {tax.roundOff !== 0 && (
+                  <div className="totals-row"><span>Round Off</span><span className="totals-val">{tax.roundOff > 0 ? '+' : ''}{formatCurrency(tax.roundOff)}</span></div>
+                )}
+                <div className="totals-row grand"><span>Total</span><span className="totals-val">{formatCurrency(tax.total)}</span></div>
               </div>
             )}
           </>
@@ -865,6 +926,9 @@ export default function Invoices() {
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>BILL TO</div>
               <div style={{ fontWeight: 700 }}>{viewInv.customer_name}</div>
               <div style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{viewInv.customer_email || ''}</div>
+              {viewInv.place_of_supply_state && (
+                <div style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Place of supply: {viewInv.place_of_supply_state}</div>
+              )}
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>DATE</div>
@@ -897,7 +961,24 @@ export default function Invoices() {
 
           <div className="totals">
             <div className="totals-row"><span>Subtotal</span><span className="totals-val">{formatCurrency(viewInv.subtotal)}</span></div>
-            {viewInv.tax_rate > 0 && (
+            {(viewInv.cgst_total > 0 || viewInv.sgst_total > 0 || viewInv.igst_total > 0) ? (
+              <>
+                {viewInv.cgst_total > 0 && (
+                  <div className="totals-row"><span>CGST</span><span className="totals-val">{formatCurrency(viewInv.cgst_total)}</span></div>
+                )}
+                {viewInv.sgst_total > 0 && (
+                  <div className="totals-row"><span>SGST</span><span className="totals-val">{formatCurrency(viewInv.sgst_total)}</span></div>
+                )}
+                {viewInv.igst_total > 0 && (
+                  <div className="totals-row"><span>IGST</span><span className="totals-val">{formatCurrency(viewInv.igst_total)}</span></div>
+                )}
+                {viewInv.round_off != 0 && (
+                  <div className="totals-row"><span>Round Off</span><span className="totals-val">{viewInv.round_off > 0 ? '+' : ''}{formatCurrency(viewInv.round_off)}</span></div>
+                )}
+              </>
+            ) : viewInv.tax_rate > 0 && (
+              // Pre-Phase-4 invoices only ever had a flat rate — fall back to
+              // the old display so they still render the tax they charged.
               <div className="totals-row"><span>Tax ({viewInv.tax_rate}%)</span><span className="totals-val">{formatCurrency(viewInv.total - viewInv.subtotal)}</span></div>
             )}
             <div className="totals-row grand"><span>Total</span><span className="totals-val">{formatCurrency(viewInv.total)}</span></div>

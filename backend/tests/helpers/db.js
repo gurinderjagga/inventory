@@ -60,7 +60,7 @@ async function resetData() {
   await query(`
     TRUNCATE TABLE
       stock_movements, goods_receipt_line_items, goods_receipts,
-      invoice_line_items, invoices, items, customers, companies, users
+      invoice_number_series, invoice_line_items, invoices, items, customers, companies, users
     RESTART IDENTITY CASCADE
   `);
 }

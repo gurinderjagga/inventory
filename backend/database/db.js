@@ -193,6 +193,18 @@ async function initDB() {
       created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- Phase 4a: one sequential counter per (company, document type, financial
+    -- year) — a company's invoices, and later its credit/debit notes, each
+    -- get their own series. Allocated by a single atomic upsert in
+    -- routes/invoices.js, not read here directly.
+    CREATE TABLE IF NOT EXISTS invoice_number_series (
+      company_id     INTEGER NOT NULL REFERENCES companies(id),
+      document_type  TEXT NOT NULL,
+      financial_year TEXT NOT NULL,
+      next_number    INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (company_id, document_type, financial_year)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_items_company           ON items(company_id);
     CREATE INDEX IF NOT EXISTS idx_invoices_company        ON invoices(company_id);
     CREATE INDEX IF NOT EXISTS idx_line_items_invoice      ON invoice_line_items(invoice_id);
@@ -221,6 +233,7 @@ async function applySchemaUpdates() {
   await exactMoneyColumns();
   await addGstFields();
   await addStockLedger();
+  await addTaxEngine();
 }
 
 /**
@@ -483,6 +496,56 @@ async function backfillOpeningBalances() {
   }
 }
 
+/**
+ * Phase 4a+4b — per-company numbering and the tax engine.
+ *
+ * The `invoice_number_series` table is created unconditionally above; this
+ * only adds the new invoice/line-item columns and the two CHECKs that keep a
+ * company without a GSTIN, or on the composition scheme, from ever ending up
+ * with tax on an invoice — regardless of what its items say.
+ *
+ * `tax_rate` is untouched: it keeps its historical meaning and values for
+ * invoices issued before this phase, and the new engine never writes it.
+ */
+async function addTaxEngine() {
+  await pool.query(`
+    ALTER TABLE invoices
+      ADD COLUMN IF NOT EXISTS place_of_supply_state TEXT,
+      ADD COLUMN IF NOT EXISTS supplier_scheme       TEXT,
+      ADD COLUMN IF NOT EXISTS cgst_total NUMERIC(14,2) NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS sgst_total NUMERIC(14,2) NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS igst_total NUMERIC(14,2) NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS round_off  NUMERIC(14,2) NOT NULL DEFAULT 0
+  `);
+
+  await pool.query(`
+    ALTER TABLE invoice_line_items
+      ADD COLUMN IF NOT EXISTS gst_rate    NUMERIC(6,3)  NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS cgst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS sgst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS igst_amount NUMERIC(14,2) NOT NULL DEFAULT 0
+  `);
+
+  // Unlike Phase 2's GSTIN check, both of these can be validated immediately
+  // rather than added NOT VALID: every row's cgst/sgst/igst columns default
+  // to 0 (including every pre-existing row, via the ADD COLUMN above), so no
+  // row in a real database can already be violating either one.
+  await addConstraintIfMissing(
+    'invoices', 'invoices_tax_requires_gstin_ck',
+    `ALTER TABLE invoices ADD CONSTRAINT invoices_tax_requires_gstin_ck
+       CHECK (supplier_gstin IS NOT NULL OR (cgst_total = 0 AND sgst_total = 0 AND igst_total = 0))`
+  );
+  // A composition-scheme company has a GSTIN, so the check above alone
+  // wouldn't stop it being charged tax — a cross-table rule ("this company's
+  // scheme") can't be a constraint unless it's copied onto the row the
+  // constraint lives on, same reasoning as the supplier GSTIN snapshot.
+  await addConstraintIfMissing(
+    'invoices', 'invoices_tax_requires_regular_scheme_ck',
+    `ALTER TABLE invoices ADD CONSTRAINT invoices_tax_requires_regular_scheme_ck
+       CHECK (supplier_scheme = 'regular' OR (cgst_total = 0 AND sgst_total = 0 AND igst_total = 0))`
+  );
+}
+
 /** Add a named constraint only if a constraint with that name doesn't already exist. */
 async function addConstraintIfMissing(table, constraintName, addSql) {
   const { rows } = await pool.query(`
@@ -516,6 +579,7 @@ module.exports = {
   applySchemaUpdates,
   addGstFields,
   addStockLedger,
+  addTaxEngine,
   PG_UNIQUE_VIOLATION,
   PG_FOREIGN_KEY_VIOLATION,
 };
