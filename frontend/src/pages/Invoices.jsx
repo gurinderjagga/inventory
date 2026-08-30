@@ -11,7 +11,9 @@ import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
-import { IconSuccess, IconPending, IconAlert, IconCheck, IconClose, IconCompany, IconDelete, IconEdit, IconFinalize, IconInvoice, IconNewInvoice, IconPdf, IconPlus, IconPlusCircle, IconSearch, IconUp, IconView, IconWarning, ICON_MD } from '../lib/icons.jsx';
+import { IconSuccess, IconPending, IconAlert, IconCheck, IconClose, IconCompany, IconDelete, IconEdit, IconFinalize, IconInvoice, IconNewInvoice, IconPdf, IconPlus, IconPlusCircle, IconSearch, IconUp, IconView, IconWarning, IconReverse, ICON_MD } from '../lib/icons.jsx';
+
+const EMPTY_CUSTOMER_FORM = { name: '', address: '', gstin: '', state_code: '' };
 
 /* ── New Invoice line-item state helper ─────────────── */
 // quantity and unit_price are held as raw strings while the user types.
@@ -26,7 +28,7 @@ const toNum = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const EMPTY_INV_FORM = { company_id: '', customer_name: '', customer_email: '', notes: '', tax_rate: '0' };
+const EMPTY_INV_FORM = { company_id: '', customer_id: '', customer_name: '', customer_email: '', notes: '', tax_rate: '0' };
 
 /** How each sortable column reads its value out of an invoice row. */
 const SORT_COLUMNS = {
@@ -63,8 +65,12 @@ function stockCheck(lines, companyItems) {
   const shortfalls = new Map();   // item_id → { name, available, requested }
   for (const [id, qty] of requested) {
     const item = byId.get(id);
-    if (item && qty > item.quantity) {
-      shortfalls.set(id, { name: item.name, available: item.quantity, requested: qty, unit: item.unit });
+    if (!item) continue;
+    // Coerced rather than trusted: NUMERIC columns arrive as strings from some
+    // Postgres drivers, and a string here would compare the wrong way.
+    const available = Number(item.quantity);
+    if (qty > available) {
+      shortfalls.set(id, { name: item.name, available, requested: qty, unit: item.unit });
     }
   }
   return { requested, shortfalls };
@@ -82,6 +88,8 @@ export default function Invoices() {
   const [invModal, setInvModal]     = useState(null);
   const [companies, setCompanies]   = useState([]);
   const [companyItems, setCompanyItems] = useState([]);
+  const [customerOptions, setCustomerOptions] = useState([]);
+  const [newCustomer, setNewCustomer] = useState(null);   // null | { form, saving, err }
   const [invForm, setInvForm]       = useState(EMPTY_INV_FORM);
   const [lines, setLines]           = useState([]);
   const [createErr, setCreateErr]   = useState('');
@@ -101,6 +109,7 @@ export default function Invoices() {
 
   // Confirm dialogs
   const [finalizeConfirm, setFinalizeConfirm] = useState(null);
+  const [reverseConfirm, setReverseConfirm]   = useState(null);
   const [deleteConfirm, setDeleteConfirm]     = useState(null);
   const [working, setWorking]                 = useState(false);   // confirm in flight
 
@@ -150,6 +159,7 @@ export default function Invoices() {
       setCompanies(data);
       setLines([]);
       setCompanyItems([]);
+      setCustomerOptions([]);
       setCreateErr('');
 
       // Choosing from a list of one is pointless, so when only a single company
@@ -157,7 +167,9 @@ export default function Invoices() {
       let startForm = EMPTY_INV_FORM;
       if (data.length === 1) {
         startForm = { ...EMPTY_INV_FORM, company_id: String(data[0].id) };
-        setCompanyItems(await api.getItems(data[0].id));
+        const [items, customers] = await Promise.all([api.getItems(data[0].id), api.getCustomers(data[0].id)]);
+        setCompanyItems(items);
+        setCustomerOptions(customers);
       }
       setInvForm(startForm);
       setPristine(JSON.stringify({ invForm: startForm, lines: [] }));
@@ -180,9 +192,12 @@ export default function Invoices() {
         return;
       }
       setCompanies(comps);
-      setCompanyItems(await api.getItems(inv.company_id));
+      const [items, customers] = await Promise.all([api.getItems(inv.company_id), api.getCustomers(inv.company_id)]);
+      setCompanyItems(items);
+      setCustomerOptions(customers);
       const startForm = {
         company_id:     String(inv.company_id),
+        customer_id:    inv.customer_id ? String(inv.customer_id) : '',
         customer_name:  inv.customer_name || '',
         customer_email: inv.customer_email || '',
         notes:          inv.notes || '',
@@ -210,13 +225,47 @@ export default function Invoices() {
 
   /* ── Company changed → load items ──────────────────── */
   const onCompanyChange = async (cid) => {
-    setInvForm(f => ({ ...f, company_id: cid }));
+    setInvForm(f => ({ ...f, company_id: cid, customer_id: '', customer_name: '' }));
     setLines([]);
-    if (!cid) { setCompanyItems([]); return; }
+    if (!cid) { setCompanyItems([]); setCustomerOptions([]); return; }
     try {
-      const items = await api.getItems(cid);
+      const [items, customers] = await Promise.all([api.getItems(cid), api.getCustomers(cid)]);
       setCompanyItems(items);
+      setCustomerOptions(customers);
     } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
+  };
+
+  /** Picking a saved customer fills the name; it stays editable as an override. */
+  const onCustomerChange = (customerId) => {
+    const customer = customerOptions.find(c => String(c.id) === String(customerId));
+    setInvForm(f => ({ ...f, customer_id: customerId, customer_name: customer?.name || f.customer_name }));
+  };
+
+  /* ── Add a customer without leaving the invoice ─────── */
+  const openNewCustomer = () => setNewCustomer({ form: EMPTY_CUSTOMER_FORM, saving: false, err: '' });
+  const closeNewCustomer = () => setNewCustomer(null);
+
+  const saveNewCustomer = async () => {
+    if (!newCustomer.form.name.trim()) {
+      setNewCustomer(nc => ({ ...nc, err: 'Customer name is required.' }));
+      return;
+    }
+    setNewCustomer(nc => ({ ...nc, saving: true, err: '' }));
+    try {
+      const created = await api.createCustomer({
+        company_id: Number(invForm.company_id),
+        name: newCustomer.form.name.trim(),
+        address: newCustomer.form.address.trim() || null,
+        gstin: newCustomer.form.gstin.trim() || null,
+        state_code: newCustomer.form.state_code.trim() || null,
+      });
+      setCustomerOptions(list => [...list, created]);
+      setInvForm(f => ({ ...f, customer_id: String(created.id), customer_name: created.name }));
+      toast.success('Customer added.');
+      setNewCustomer(null);
+    } catch (e) {
+      setNewCustomer(nc => ({ ...nc, saving: false, err: e.message }));
+    }
   };
 
   /* ── Line item helpers ──────────────────────────────── */
@@ -300,6 +349,7 @@ export default function Invoices() {
       // Select values are strings; send real numbers so the payload does not
       // depend on the database coercing "3" into an integer.
       const payload = {
+        customer_id:    invForm.customer_id ? Number(invForm.customer_id) : null,
         customer_name:  invForm.customer_name.trim(),
         customer_email: invForm.customer_email.trim() || null,
         notes:          invForm.notes.trim() || null,
@@ -361,6 +411,23 @@ export default function Invoices() {
       // beside the editor, and the shortfall is highlighted per line.
       load();
       openEdit(id);
+    }
+  };
+
+  /* ── Reverse ────────────────────────────────────────── */
+  const handleReverse = async () => {
+    if (!reverseConfirm || working) return;
+    const { id } = reverseConfirm;
+    setWorking(true);
+    try {
+      await api.reverseInvoice(id);
+      toast.success('Invoice reversed and stock restored.');
+      load();
+    } catch (e) {
+      if (!isAuthError(e)) toast.error(e.message, 'Could not reverse invoice');
+    } finally {
+      setWorking(false);
+      setReverseConfirm(null);
     }
   };
 
@@ -448,7 +515,10 @@ export default function Invoices() {
                   <td className="num">{formatCurrency(inv.subtotal)}</td>
                   <td className="num num-strong">{formatCurrency(inv.total)}</td>
                   <td>
-                    <span className={`badge ${inv.status === 'finalized' ? 'badge-success' : 'badge-warning'}`}>
+                    <span className={`badge ${
+                      inv.status === 'finalized' ? 'badge-success'
+                      : inv.status === 'reversed' ? 'badge-neutral' : 'badge-warning'
+                    }`}>
                       {inv.status}
                     </span>
                   </td>
@@ -479,9 +549,17 @@ export default function Invoices() {
                           </button>
                         </>
                       ) : (
-                        <a href={api.pdfUrl(inv.id)} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">
-                          <IconPdf size={ICON_MD} /> PDF
-                        </a>
+                        <>
+                          <a href={api.pdfUrl(inv.id)} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">
+                            <IconPdf size={ICON_MD} /> PDF
+                          </a>
+                          {inv.status === 'finalized' && (
+                            <button className="btn btn-secondary btn-sm" onClick={() => setReverseConfirm({ id: inv.id, no: inv.invoice_no })}
+                                    title={`Reverse ${inv.invoice_no}`} aria-label={`Reverse ${inv.invoice_no}`}>
+                              <IconReverse size={ICON_MD} /> Reverse
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </td>
@@ -535,6 +613,24 @@ export default function Invoices() {
             )}
           </div>
           <div className="form-group" style={{ margin: 0 }}>
+            <label>Customer</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <select
+                style={{ flex: 1 }}
+                value={invForm.customer_id}
+                onChange={e => onCustomerChange(e.target.value)}
+                disabled={!invForm.company_id}
+              >
+                <option value="">Manual entry…</option>
+                {customerOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={openNewCustomer}
+                      disabled={!invForm.company_id} title="Add a new customer">
+                <IconPlus size={ICON_MD} />
+              </button>
+            </div>
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
             <label>Customer Name <span style={{ color: 'var(--danger)' }}>*</span></label>
             <input type="text" placeholder="e.g. John Doe" {...fld('customer_name')} />
           </div>
@@ -586,7 +682,7 @@ export default function Invoices() {
                           <option value="">Select item…</option>
                           {companyItems.map(item => (
                             <option key={item.id} value={item.id}>
-                              {item.name} ({item.quantity} {item.unit}{item.quantity <= 0 ? ' — out of stock' : ''})
+                              {item.name} ({item.quantity} {item.unit}{Number(item.quantity) <= 0 ? ' — out of stock' : ''})
                             </option>
                           ))}
                         </select>
@@ -698,6 +794,48 @@ export default function Invoices() {
         )}
       </Modal>
 
+      {/* ── Add customer, without leaving the invoice ────── */}
+      {newCustomer && (
+        <Modal isOpen={!!newCustomer} onClose={closeNewCustomer} title="Add Customer"
+          onSubmit={saveNewCustomer}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" onClick={closeNewCustomer}>Cancel</button>
+              <button className="btn btn-primary" disabled={newCustomer.saving}>
+                {newCustomer.saving
+                  ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</>
+                  : <><IconCheck size={ICON_MD} /> Add Customer</>}
+              </button>
+            </>
+          }
+        >
+          <div className="form-group">
+            <label>Customer Name <span style={{ color: 'var(--danger)' }}>*</span></label>
+            <input type="text" placeholder="e.g. Riya Sharma" autoFocus
+                   value={newCustomer.form.name}
+                   onChange={e => setNewCustomer(nc => ({ ...nc, form: { ...nc.form, name: e.target.value } }))} />
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>GSTIN (optional)</label>
+              <input type="text" maxLength={15}
+                     value={newCustomer.form.gstin}
+                     onChange={e => setNewCustomer(nc => ({ ...nc, form: { ...nc.form, gstin: e.target.value } }))} />
+              <small className="field-hint">Only needed for a registered business customer (B2B)</small>
+            </div>
+            <div className="form-group">
+              <label>State Code (optional)</label>
+              <input type="text" maxLength={2}
+                     value={newCustomer.form.state_code}
+                     onChange={e => setNewCustomer(nc => ({ ...nc, form: { ...nc.form, state_code: e.target.value } }))} />
+            </div>
+          </div>
+          {newCustomer.err && (
+            <div className="login-error"><IconAlert size={ICON_MD} /><span>{newCustomer.err}</span></div>
+          )}
+        </Modal>
+      )}
+
       {/* ── View Invoice Modal ──────────────────────────── */}
       {viewInv && (
         <Modal isOpen={!!viewInv} onClose={() => setViewInv(null)} title={`Invoice ${viewInv.invoice_no}`} size="modal-lg"
@@ -717,8 +855,11 @@ export default function Invoices() {
           <div className="modal-grid-2" style={{ marginBottom: 20 }}>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>FROM</div>
-              <div style={{ fontWeight: 700 }}>{viewInv.company_name}</div>
+              <div style={{ fontWeight: 700 }}>{viewInv.supplier_name || viewInv.company_name}</div>
               <div style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{viewInv.company_email || ''}</div>
+              {viewInv.supplier_gstin && (
+                <div style={{ color: 'var(--text-secondary)', fontSize: 12 }}>GSTIN: {viewInv.supplier_gstin}</div>
+              )}
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>BILL TO</div>
@@ -731,8 +872,10 @@ export default function Invoices() {
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>STATUS</div>
-              <span className={`badge ${viewInv.status === 'finalized' ? 'badge-success' : 'badge-warning'}`}
-                    style={{ textTransform: 'capitalize' }}>{viewInv.status}</span>
+              <span className={`badge ${
+                viewInv.status === 'finalized' ? 'badge-success'
+                : viewInv.status === 'reversed' ? 'badge-neutral' : 'badge-warning'
+              }`} style={{ textTransform: 'capitalize' }}>{viewInv.status}</span>
             </div>
           </div>
 
@@ -772,6 +915,12 @@ export default function Invoices() {
         message={<>Finalize <strong>{finalizeConfirm?.no}</strong>? Stock will be permanently deducted. This cannot be undone.</>}
         confirmText="Finalize & Deduct Stock" busyText="Finalizing…" busy={working}
         onConfirm={handleFinalize} onCancel={() => setFinalizeConfirm(null)} />
+
+      {/* Reverse confirm */}
+      <ConfirmDialog isOpen={!!reverseConfirm} title="Reverse Invoice"
+        message={<>Reverse <strong>{reverseConfirm?.no}</strong>? Stock will be restored, and the invoice can no longer be edited, finalized, or deleted. This cannot be undone.</>}
+        confirmText="Reverse & Restore Stock" busyText="Reversing…" busy={working}
+        onConfirm={handleReverse} onCancel={() => setReverseConfirm(null)} />
 
       {/* Delete confirm */}
       <ConfirmDialog isOpen={!!deleteConfirm} title="Delete Draft Invoice"

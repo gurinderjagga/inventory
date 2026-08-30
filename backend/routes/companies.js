@@ -2,20 +2,37 @@ const express = require('express');
 const { query, PG_UNIQUE_VIOLATION } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
-const { NotFoundError, ConflictError } = require('../lib/errors');
+const { NotFoundError, ConflictError, ValidationError } = require('../lib/errors');
 const v = require('../lib/validate');
 
 const router = express.Router();
 router.use(authMiddleware);
 
+const SCHEMES = ['regular', 'composition'];
+
 /** Read and validate the company payload shared by POST and PUT. */
 function readBody(body) {
+  const scheme = v.optionalString(body.scheme) || 'regular';
+  if (!SCHEMES.includes(scheme)) {
+    throw new ValidationError(`Scheme must be one of: ${SCHEMES.join(', ')}`);
+  }
   return {
-    name:    v.requiredString(body.name, 'Company name'),
-    email:   v.optionalString(body.email),
-    phone:   v.optionalString(body.phone),
-    address: v.optionalString(body.address),
+    name:             v.requiredString(body.name, 'Company name'),
+    email:            v.optionalString(body.email),
+    phone:            v.optionalString(body.phone),
+    address:          v.optionalString(body.address),
+    gstin:            v.gstin(body.gstin),
+    legalName:        v.optionalString(body.legal_name),
+    stateCode:        v.optionalString(body.state_code),
+    pan:              v.pan(body.pan),
+    scheme,
+    einvoiceEnabled:  v.boolean(body.einvoice_enabled),
   };
+}
+
+/** Read the archive/active flag on PUT, preserving the current value when omitted. */
+function readActive(body, current) {
+  return body.active === undefined ? current : v.boolean(body.active, { fallback: current });
 }
 
 // GET /api/companies  — all companies with item + low stock counts.
@@ -53,22 +70,28 @@ router.get('/:id', asyncHandler(async (req, res) => {
   res.json(rows[0]);
 }));
 
+/** GSTIN and name both sit behind partial/plain unique indexes on this table. */
+function throwOnUniqueViolation(err) {
+  if (err.code !== PG_UNIQUE_VIOLATION) throw err;
+  if (err.constraint === 'idx_companies_gstin') {
+    throw new ConflictError('A company with that GSTIN already exists');
+  }
+  throw new ConflictError('A company with that name already exists');
+}
+
 // POST /api/companies
 router.post('/', asyncHandler(async (req, res) => {
   const c = readBody(req.body);
   try {
     const { rows } = await query(
-      `INSERT INTO companies (name, email, phone, address)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO companies (name, email, phone, address, gstin, legal_name, state_code, pan, scheme, einvoice_enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [c.name, c.email, c.phone, c.address]
+      [c.name, c.email, c.phone, c.address, c.gstin, c.legalName, c.stateCode, c.pan, c.scheme, c.einvoiceEnabled]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
-    if (err.code === PG_UNIQUE_VIOLATION) {
-      throw new ConflictError('A company with that name already exists');
-    }
-    throw err;
+    throwOnUniqueViolation(err);
   }
 }));
 
@@ -76,20 +99,26 @@ router.post('/', asyncHandler(async (req, res) => {
 router.put('/:id', asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Company id');
   const c  = readBody(req.body);
+
+  const { rows: existing } = await query('SELECT active FROM companies WHERE id = $1', [id]);
+  if (!existing[0]) throw new NotFoundError('Company not found');
+  const active = readActive(req.body, existing[0].active);
+
   try {
     const { rows } = await query(
-      `UPDATE companies SET name = $1, email = $2, phone = $3, address = $4
-       WHERE id = $5
+      `UPDATE companies
+       SET name = $1, email = $2, phone = $3, address = $4, gstin = $5, legal_name = $6,
+           state_code = $7, pan = $8, scheme = $9, einvoice_enabled = $10, active = $11,
+           updated_at = now()
+       WHERE id = $12
        RETURNING *`,
-      [c.name, c.email, c.phone, c.address, id]
+      [c.name, c.email, c.phone, c.address, c.gstin, c.legalName, c.stateCode, c.pan,
+        c.scheme, c.einvoiceEnabled, active, id]
     );
     if (!rows[0]) throw new NotFoundError('Company not found');
     res.json(rows[0]);
   } catch (err) {
-    if (err.code === PG_UNIQUE_VIOLATION) {
-      throw new ConflictError('A company with that name already exists');
-    }
-    throw err;
+    throwOnUniqueViolation(err);
   }
 }));
 
@@ -111,6 +140,21 @@ router.delete('/:id', asyncHandler(async (req, res) => {
     throw new ConflictError(
       `Cannot delete "${existing[0].name}" — it has ${n} invoice${n === 1 ? '' : 's'}. ` +
       `Delete ${n === 1 ? 'that invoice' : 'those invoices'} first, or keep the company for your records.`
+    );
+  }
+
+  // Same reasoning as invoices: a goods receipt is a real inbound-stock
+  // record, and deleting the company out from under it (cascading its items)
+  // would destroy that history too.
+  const { rows: receiptRefs } = await query(
+    'SELECT COUNT(*)::int AS count FROM goods_receipts WHERE company_id = $1',
+    [id]
+  );
+  if (receiptRefs[0].count > 0) {
+    const n = receiptRefs[0].count;
+    throw new ConflictError(
+      `Cannot delete "${existing[0].name}" — it has ${n} goods receipt${n === 1 ? '' : 's'}. ` +
+      `Keep the company for your records instead.`
     );
   }
 

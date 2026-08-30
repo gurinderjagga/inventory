@@ -10,9 +10,13 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
 import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
-import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconWarning, ICON_MD } from '../lib/icons.jsx';
+import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconWarning, IconArchive, ICON_MD } from '../lib/icons.jsx';
 
-const EMPTY_FORM = { name: '', email: '', phone: '', address: '' };
+const EMPTY_FORM = {
+  name: '', email: '', phone: '', address: '',
+  gstin: '', legal_name: '', state_code: '', pan: '',
+  scheme: 'regular', einvoice_enabled: false,
+};
 
 const SORT_COLUMNS = {
   name:            r => r.name,
@@ -73,6 +77,9 @@ export default function Companies() {
     const next = {
       name: company.name, email: company.email || '',
       phone: company.phone || '', address: company.address || '',
+      gstin: company.gstin || '', legal_name: company.legal_name || '',
+      state_code: company.state_code || '', pan: company.pan || '',
+      scheme: company.scheme || 'regular', einvoice_enabled: !!company.einvoice_enabled,
     };
     setForm(next);
     setPristine(JSON.stringify(next));
@@ -127,6 +134,27 @@ export default function Companies() {
     onChange: (e) => setForm(f => ({ ...f, [key]: e.target.value })),
   });
 
+  const checkboxField = (key) => ({
+    checked: form[key],
+    onChange: (e) => setForm(f => ({ ...f, [key]: e.target.checked })),
+  });
+
+  /* ── Archive / reactivate ───────────────────────────── */
+  const toggleActive = async (company) => {
+    try {
+      await api.updateCompany(company.id, {
+        name: company.name, email: company.email, phone: company.phone, address: company.address,
+        gstin: company.gstin, legal_name: company.legal_name, state_code: company.state_code,
+        pan: company.pan, scheme: company.scheme, einvoice_enabled: company.einvoice_enabled,
+        active: !company.active,
+      });
+      toast.success(company.active ? `"${company.name}" archived.` : `"${company.name}" reactivated.`);
+      load();
+    } catch (e) {
+      if (!isAuthError(e)) toast.error(e.message);
+    }
+  };
+
   /* ── Render ─────────────────────────────────────────── */
   if (loading) return <div className="loading-page"><div className="spinner" /><span>Loading…</span></div>;
 
@@ -176,6 +204,7 @@ export default function Companies() {
                 <SortableTh sortKey="item_count"      sort={sort} onToggle={toggle}>Items</SortableTh>
                 <SortableTh sortKey="low_stock_count" sort={sort} onToggle={toggle}>Low Stock</SortableTh>
                 <SortableTh sortKey="stock_value"     sort={sort} onToggle={toggle} align="num">Stock Value</SortableTh>
+                <th>Status</th>
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
@@ -198,9 +227,22 @@ export default function Companies() {
                   </td>
                   <td className="num num-strong">{formatCurrency(c.stock_value)}</td>
                   <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', whiteSpace: 'nowrap' }}>
+                      {c.active === false
+                        ? <span className="badge badge-neutral">Archived</span>
+                        : <span className="badge badge-success">Active</span>}
+                      {c.gstin && <span className="badge badge-neutral">GST</span>}
+                    </div>
+                  </td>
+                  <td>
                     <div className="td-actions">
                       <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>
                         <IconEdit size={ICON_MD} /> Edit
+                      </button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => toggleActive(c)}
+                              title={c.active === false ? `Reactivate ${c.name}` : `Archive ${c.name}`}
+                              aria-label={c.active === false ? `Reactivate ${c.name}` : `Archive ${c.name}`}>
+                        {c.active === false ? <IconRestore size={ICON_MD} /> : <IconArchive size={ICON_MD} />}
                       </button>
                       <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}
                               title={`Delete ${c.name}`} aria-label={`Delete ${c.name}`}>
@@ -249,6 +291,42 @@ export default function Companies() {
         <div className="form-group">
           <label>Address</label>
           <textarea placeholder="Street, City, State" {...field('address')} />
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label>GSTIN (optional)</label>
+            <input type="text" placeholder="e.g. 27ABCDE1234F1Z5" maxLength={15} {...field('gstin')} />
+            <small className="field-hint">Leave blank for a company not registered for GST</small>
+          </div>
+          <div className="form-group">
+            <label>State Code (optional)</label>
+            <input type="text" placeholder="e.g. 27" maxLength={2} {...field('state_code')} />
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Legal Name</label>
+            <input type="text" placeholder="Registered legal name, if different" {...field('legal_name')} />
+          </div>
+          <div className="form-group">
+            <label>PAN (optional)</label>
+            <input type="text" placeholder="e.g. ABCDE1234F" maxLength={10} {...field('pan')} />
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Scheme</label>
+            <select {...field('scheme')}>
+              <option value="regular">Regular</option>
+              <option value="composition">Composition</option>
+            </select>
+          </div>
+          <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 0 }}>
+              <input type="checkbox" {...checkboxField('einvoice_enabled')} />
+              e-Invoicing enabled
+            </label>
+          </div>
         </div>
         {formErr && (
           <div className="login-error">

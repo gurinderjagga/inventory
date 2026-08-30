@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { api, isAuthError } from '../api.js';
 import { listContainer, listItem } from '../lib/motion.js';
 import { formatCurrency, formatDate } from '../lib/format.js';
-import { IconCompany, IconStock, IconInvoice, IconAlert, IconWarning, IconSuccess, IconPending,
+import { IconCompany, IconStock, IconInvoice, IconCustomer, IconGoodsReceipt, IconAlert, IconWarning, IconSuccess, IconPending,
          IconPlusCircle, IconChevron, IconRefresh, ICON_MD, ICON_LG } from '../lib/icons.jsx';
 
 function KpiCard({ label, value, Icon, accent }) {
@@ -248,9 +248,11 @@ export default function Dashboard() {
             <div className="db-card-title" style={{ marginBottom: 14 }}>Quick Actions</div>
             <div className="db-action-list">
               {[
-                { label: 'New Invoice',  Icon: IconPlusCircle, to: '/invoices' },
-                { label: 'Manage Stock', Icon: IconStock,      to: '/stock'    },
-                { label: 'Add Company',  Icon: IconCompany,    to: '/companies' },
+                { label: 'New Invoice',    Icon: IconPlusCircle,   to: '/invoices' },
+                { label: 'Manage Stock',   Icon: IconStock,        to: '/stock'    },
+                { label: 'Receive Stock',  Icon: IconGoodsReceipt, to: '/goods-receipts' },
+                { label: 'Add Customer',   Icon: IconCustomer,     to: '/customers' },
+                { label: 'Add Company',    Icon: IconCompany,      to: '/companies' },
               ].map(a => (
                 <button key={a.label} className="db-action-btn" onClick={() => navigate(a.to)}>
                   <a.Icon size={ICON_MD} />

@@ -11,9 +11,22 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
 import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
-import { IconAlert, IconBack, IconCheck, IconChevron, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconStock, IconSuccess, IconWarning, ICON_MD } from '../lib/icons.jsx';
+import { IconAlert, IconBack, IconCheck, IconChevron, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconStock, IconSuccess, IconWarning, IconAdjust, IconHistory, ICON_MD } from '../lib/icons.jsx';
+
+/** A human label for each stock_movements.reason value. */
+const MOVEMENT_LABELS = {
+  initial_stock:     'Initial stock',
+  invoice_finalize:  'Invoice finalized',
+  invoice_reversal:  'Invoice reversed',
+  goods_received:    'Goods received',
+  manual_adjustment: 'Manual adjustment',
+};
 
 const UNITS = ['pcs', 'boxes', 'reams', 'kg', 'liters', 'sets', 'packs', 'rolls', 'pairs'];
+
+// GST's Unit Quantity Code — the unit returns are filed in. A small, common
+// subset rather than the full CBIC list; PCS/NOS covers most goods here.
+const UQC_CODES = ['PCS', 'NOS', 'KGS', 'LTR', 'MTR', 'BOX', 'SET', 'PAC', 'DOZ', 'OTH'];
 
 /**
  * Units counted in whole things. A shelf cannot hold 2.5 pieces, and letting
@@ -30,7 +43,10 @@ const SORT_COLUMNS = {
   stock_value: r => Number(r.quantity) * Number(r.unit_price),
   status:      r => (Number(r.quantity) <= Number(r.low_stock_threshold) ? 0 : 1),
 };
-const EMPTY_FORM = { name: '', sku: '', unit: 'pcs', quantity: '', unit_price: '', low_stock_threshold: '10' };
+const EMPTY_FORM = {
+  name: '', sku: '', unit: 'pcs', quantity: '', unit_price: '', low_stock_threshold: '10',
+  hsn_sac_code: '', is_service: false, gst_rate: '', uqc: '', cost_price: '',
+};
 
 export default function Stock() {
   const { toast }                 = useToast();
@@ -47,6 +63,8 @@ export default function Stock() {
   const [confirm, setConfirm]     = useState(null);
   const [deleting, setDeleting]   = useState(false);
   const [pristine, setPristine]   = useState('');
+  const [adjust, setAdjust]       = useState(null);   // null | { item, quantity, reason, saving, err }
+  const [history, setHistory]     = useState(null);   // null | { item, loading, movements }
 
   // Which company's stock is on screen lives in the URL, not in useState.
   // Held only in state, the view could not be bookmarked or shared, a refresh
@@ -119,6 +137,9 @@ export default function Stock() {
       name: item.name, sku: item.sku || '', unit: item.unit,
       quantity: String(item.quantity), unit_price: String(item.unit_price),
       low_stock_threshold: String(item.low_stock_threshold),
+      hsn_sac_code: item.hsn_sac_code || '', is_service: !!item.is_service,
+      gst_rate: item.gst_rate != null ? String(item.gst_rate) : '',
+      uqc: item.uqc || '', cost_price: item.cost_price != null ? String(item.cost_price) : '',
     };
     setForm(next);
     setPristine(JSON.stringify(next));
@@ -138,16 +159,24 @@ export default function Stock() {
       setFormErr(`Quantity must be a whole number when the unit is ${form.unit}.`);
       return;
     }
+    const gstRate   = form.gst_rate === '' ? 0 : parseFloat(form.gst_rate);
+    const costPrice = form.cost_price === '' ? 0 : parseFloat(form.cost_price);
+    if (isNaN(gstRate) || gstRate < 0) { setFormErr('GST rate must be ≥ 0.'); return; }
+    if (isNaN(costPrice) || costPrice < 0) { setFormErr('Cost price must be ≥ 0.'); return; }
 
     setSaving(true); setFormErr('');
     const payload = {
       name: form.name.trim(), sku: form.sku.trim() || null, unit: form.unit,
-      quantity: qty, unit_price: price,
+      unit_price: price,
       low_stock_threshold: parseFloat(form.low_stock_threshold) || 10,
+      hsn_sac_code: form.hsn_sac_code.trim() || null, is_service: form.is_service,
+      gst_rate: gstRate, uqc: form.uqc || null, cost_price: costPrice,
     };
     try {
       if (modal.mode === 'add') {
-        await api.createItem({ ...payload, company_id: selected.id });
+        // Only creation carries a starting quantity — editing never touches
+        // stock, see the Adjust Stock action below.
+        await api.createItem({ ...payload, quantity: qty, company_id: selected.id });
         toast.success('Item added.');
       } else {
         await api.updateItem(modal.data.id, payload);
@@ -157,6 +186,41 @@ export default function Stock() {
       setRefreshKey(k => k + 1);
     } catch (e) { setFormErr(e.message); setSaving(false); }
   };
+
+  /* ── Adjust stock ───────────────────────────────────── */
+  const openAdjust = (item) => setAdjust({
+    item, quantity: String(item.quantity), reason: '', saving: false, err: '',
+  });
+  const closeAdjust = () => setAdjust(null);
+
+  const handleAdjust = async () => {
+    const qty = parseFloat(adjust.quantity);
+    if (isNaN(qty) || qty < 0) { setAdjust(a => ({ ...a, err: 'Quantity must be ≥ 0.' })); return; }
+    if (!adjust.reason.trim()) { setAdjust(a => ({ ...a, err: 'A reason is required.' })); return; }
+
+    setAdjust(a => ({ ...a, saving: true, err: '' }));
+    try {
+      await api.adjustItemQuantity(adjust.item.id, { quantity: qty, reason: adjust.reason.trim() });
+      toast.success(`"${adjust.item.name}" adjusted.`);
+      closeAdjust();
+      setRefreshKey(k => k + 1);
+    } catch (e) {
+      setAdjust(a => ({ ...a, saving: false, err: e.message }));
+    }
+  };
+
+  /* ── Movement history ─────────────────────────────────── */
+  const openHistory = async (item) => {
+    setHistory({ item, loading: true, movements: [] });
+    try {
+      const movements = await api.getItemMovements(item.id);
+      setHistory(h => (h && h.item.id === item.id ? { ...h, loading: false, movements } : h));
+    } catch (e) {
+      setHistory(null);
+      if (!isAuthError(e)) toast.error(e.message, 'Could not load history');
+    }
+  };
+  const closeHistory = () => setHistory(null);
 
   const handleDelete = async () => {
     if (!confirm || deleting) return;
@@ -180,6 +244,11 @@ export default function Stock() {
   const field = (key) => ({
     value: form[key],
     onChange: (e) => setForm(f => ({ ...f, [key]: e.target.value })),
+  });
+
+  const checkboxField = (key) => ({
+    checked: form[key],
+    onChange: (e) => setForm(f => ({ ...f, [key]: e.target.checked })),
   });
 
   /* ── Filter, sort, page ───────────────────────────────
@@ -314,14 +383,22 @@ export default function Stock() {
             </thead>
             <motion.tbody variants={listContainer} initial="initial" animate="animate">
               {pager.visible.map(item => {
-                const isLow  = item.quantity <= item.low_stock_threshold;
+                // Coerced explicitly. These columns are NUMERIC, and a Postgres
+                // driver hands NUMERIC back as a string unless told otherwise —
+                // at which point `"10.000" <= "5.000"` compares lexicographically
+                // and is TRUE, marking a well-stocked item as low. The API
+                // currently sends numbers; this does not depend on it.
+                const qty    = Number(item.quantity);
+                const thresh = Number(item.low_stock_threshold);
+
+                const isLow  = qty <= thresh;
                 // With no threshold set there is nothing to measure against,
                 // so the bar tracks "is there any stock at all" rather than
                 // showing a reassuring full bar for an empty shelf.
-                const pct    = item.low_stock_threshold > 0
-                  ? Math.min(100, (item.quantity / (item.low_stock_threshold * 3)) * 100)
-                  : item.quantity > 0 ? 100 : 0;
-                const barClr = isLow ? 'var(--warning)' : item.quantity > item.low_stock_threshold * 2 ? 'var(--success)' : 'var(--info)';
+                const pct    = thresh > 0
+                  ? Math.min(100, (qty / (thresh * 3)) * 100)
+                  : qty > 0 ? 100 : 0;
+                const barClr = isLow ? 'var(--warning)' : qty > thresh * 2 ? 'var(--success)' : 'var(--info)';
                 return (
                   <motion.tr key={item.id} variants={listItem}>
                     <td className="cell-primary">{item.name}</td>
@@ -353,6 +430,14 @@ export default function Stock() {
                         <button className="btn btn-secondary btn-sm" onClick={() => openEdit(item)}
                                 title={`Edit ${item.name}`} aria-label={`Edit ${item.name}`}>
                           <IconEdit size={ICON_MD} />
+                        </button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => openAdjust(item)}
+                                title={`Adjust stock for ${item.name}`} aria-label={`Adjust stock for ${item.name}`}>
+                          <IconAdjust size={ICON_MD} />
+                        </button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => openHistory(item)}
+                                title={`Movement history for ${item.name}`} aria-label={`Movement history for ${item.name}`}>
+                          <IconHistory size={ICON_MD} />
                         </button>
                         <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: item.id, name: item.name })}
                                 title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`}>
@@ -395,10 +480,18 @@ export default function Stock() {
           </div>
         </div>
         <div className="form-row">
-          <div className="form-group"><label>Quantity <span style={{ color: 'var(--danger)' }}>*</span></label>
-            {/* Whole numbers for units you count, decimals for kg and litres. */}
-            <input type="number" min="0" step={isDiscrete ? '1' : '0.01'} placeholder="0" {...field('quantity')} />
-            {isDiscrete && (
+          <div className="form-group">
+            <label>{modal?.mode === 'add' ? <>Quantity <span style={{ color: 'var(--danger)' }}>*</span></> : 'Quantity'}</label>
+            {/* Whole numbers for units you count, decimals for kg and litres.
+                Read-only once the item exists: every later change has to be
+                attributed and reasoned, via Adjust Stock, not a silent edit. */}
+            <input type="number" min="0" step={isDiscrete ? '1' : '0.01'} placeholder="0"
+                   disabled={modal?.mode === 'edit'} {...field('quantity')} />
+            {modal?.mode === 'edit' ? (
+              <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
+                Use the Adjust Stock action to change quantity.
+              </small>
+            ) : isDiscrete && (
               <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
                 Whole {form.unit} only.
               </small>
@@ -412,6 +505,31 @@ export default function Stock() {
           <input type="number" min="0" placeholder="10" {...field('low_stock_threshold')} />
           <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>Alert when quantity falls at or below this value</small>
         </div>
+        <div className="form-group">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" {...checkboxField('is_service')} />
+            This is a service, not goods
+          </label>
+        </div>
+        <div className="form-row">
+          <div className="form-group"><label>{form.is_service ? 'SAC Code (optional)' : 'HSN Code (optional)'}</label>
+            <input type="text" placeholder={form.is_service ? 'e.g. 998314' : 'e.g. 8471'} {...field('hsn_sac_code')} />
+          </div>
+          <div className="form-group"><label>UQC</label>
+            <select {...field('uqc')}>
+              <option value="">—</option>
+              {UQC_CODES.map(u => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="form-group"><label>GST Rate (%)</label>
+            <input type="number" min="0" step="0.01" placeholder="0" {...field('gst_rate')} />
+          </div>
+          <div className="form-group"><label>Cost Price (₹)</label>
+            <input type="number" min="0" step="0.01" placeholder="0.00" {...field('cost_price')} />
+          </div>
+        </div>
         {formErr && <div className="login-error"><IconAlert size={ICON_MD} /><span>{formErr}</span></div>}
       </Modal>
 
@@ -419,6 +537,77 @@ export default function Stock() {
         message={<>Remove <strong>{confirm?.name}</strong> from {selected.name}&rsquo;s inventory? This cannot be undone.</>}
         confirmText="Delete" busyText="Deleting…" danger busy={deleting}
         onConfirm={handleDelete} onCancel={() => setConfirm(null)} />
+
+      {/* Adjust Stock modal */}
+      {adjust && (
+        <Modal isOpen={!!adjust} onClose={closeAdjust} title={`Adjust Stock: ${adjust.item.name}`}
+          onSubmit={handleAdjust}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" onClick={closeAdjust}>Cancel</button>
+              <button className="btn btn-primary" disabled={adjust.saving}>
+                {adjust.saving
+                  ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</>
+                  : <><IconCheck size={ICON_MD} /> Adjust</>}
+              </button>
+            </>
+          }
+        >
+          <div className="form-group">
+            <label>New Quantity <span style={{ color: 'var(--danger)' }}>*</span></label>
+            <input type="number" min="0" step="0.01" autoFocus
+                   value={adjust.quantity}
+                   onChange={e => setAdjust(a => ({ ...a, quantity: e.target.value }))} />
+            <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
+              Currently {adjust.item.quantity} {adjust.item.unit}
+            </small>
+          </div>
+          <div className="form-group">
+            <label>Reason <span style={{ color: 'var(--danger)' }}>*</span></label>
+            <input type="text" placeholder="e.g. Physical count correction, damaged stock…"
+                   value={adjust.reason}
+                   onChange={e => setAdjust(a => ({ ...a, reason: e.target.value }))} />
+          </div>
+          {adjust.err && <div className="login-error"><IconAlert size={ICON_MD} /><span>{adjust.err}</span></div>}
+        </Modal>
+      )}
+
+      {/* Movement history modal */}
+      {history && (
+        <Modal isOpen={!!history} onClose={closeHistory} title={`History: ${history.item.name}`} size="modal-lg">
+          {history.loading ? (
+            <div className="loading-page" style={{ height: 120 }}><div className="spinner" /></div>
+          ) : history.movements.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>No stock movements recorded yet.</p>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr><th>Date</th><th>Reason</th><th className="num">Change</th><th>Reference</th><th>By</th></tr>
+                </thead>
+                <tbody>
+                  {history.movements.map(m => (
+                    <tr key={m.id}>
+                      <td className="cell-muted" style={{ whiteSpace: 'nowrap' }}>
+                        {new Date(m.created_at).toLocaleString()}
+                      </td>
+                      <td>
+                        {MOVEMENT_LABELS[m.reason] || m.reason}
+                        {m.note && <div className="cell-muted" style={{ fontSize: 11 }}>{m.note}</div>}
+                      </td>
+                      <td className="num" style={{ color: Number(m.quantity_delta) < 0 ? 'var(--danger)' : 'var(--success)' }}>
+                        {Number(m.quantity_delta) > 0 ? '+' : ''}{m.quantity_delta}
+                      </td>
+                      <td className="cell-muted">{m.invoice_no || m.goods_receipt_supplier || '—'}</td>
+                      <td className="cell-muted">{m.username || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

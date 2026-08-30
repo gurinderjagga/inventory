@@ -6,14 +6,19 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "seed": "node database/seed.js"
+    "seed": "node database/seed.js",
+    "test": "node --test --test-concurrency=1 --require ./tests/helpers/env.js \"tests/**/*.test.js\"",
+    "test:watch": "node --test --watch --test-concurrency=1 --require ./tests/helpers/env.js \"tests/**/*.test.js\""
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.6",
+    "decimal.js": "^10.6.0",
     "dotenv": "^17.4.2",
     "express": "^4.18.2",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "pdfkit": "^0.15.0",
     "pg": "^8.23.0"

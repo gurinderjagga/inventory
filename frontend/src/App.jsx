@@ -7,6 +7,8 @@ import Login from "./pages/Login.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Companies from "./pages/Companies.jsx";
 import Stock from "./pages/Stock.jsx";
+import Customers from "./pages/Customers.jsx";
+import GoodsReceipts from "./pages/GoodsReceipts.jsx";
 import Invoices from "./pages/Invoices.jsx";
 import Users from "./pages/Users.jsx";
 
@@ -56,6 +58,8 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/companies" element={<Companies />} />
             <Route path="/stock" element={<Stock />} />
+            <Route path="/customers" element={<Customers />} />
+            <Route path="/goods-receipts" element={<GoodsReceipts />} />
             <Route path="/invoices" element={<Invoices />} />
             <Route path="/users" element={<Users />} />
           </Route>

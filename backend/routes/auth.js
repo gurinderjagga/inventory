@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const { query } = require('../database/db');
 const { authMiddleware, JWT_SECRET } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
+const { loginLimiter, passwordChangeLimiter } = require('../middleware/rateLimit');
 const { COOKIE_SAMESITE, COOKIE_SECURE } = require('../config');
 const v = require('../lib/validate');
 
@@ -21,7 +22,7 @@ const COOKIE_OPTIONS = {
 };
 
 // POST /api/auth/login
-router.post('/login', asyncHandler(async (req, res) => {
+router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
@@ -65,7 +66,7 @@ router.post('/logout', (req, res) => {
 });
 
 // POST /api/auth/change-password  — any signed-in user, own account only
-router.post('/change-password', authMiddleware, asyncHandler(async (req, res) => {
+router.post('/change-password', passwordChangeLimiter, authMiddleware, asyncHandler(async (req, res) => {
   const { current_password, new_password } = req.body;
 
   if (!current_password) {

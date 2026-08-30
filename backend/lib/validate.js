@@ -114,8 +114,43 @@ function username(raw, field = 'Username') {
   return s;
 }
 
+// 2-digit state code + 10-char PAN + 1 entity digit + 'Z' + 1 checksum char.
+const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+// 5 letters, 4 digits, 1 letter.
+const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+
+/**
+ * Validate an optional GSTIN, uppercased first so a pasted lowercase value
+ * isn't rejected on casing alone. Returns null when absent.
+ * @throws {ValidationError} if present but not 15 characters in GSTIN shape.
+ */
+function gstin(raw, field = 'GSTIN') {
+  const s = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+  if (!s) return null;
+  if (!GSTIN_RE.test(s)) {
+    throw new ValidationError(`${field} is not a valid GSTIN`);
+  }
+  return s;
+}
+
+/** Validate an optional PAN. Returns null when absent. */
+function pan(raw, field = 'PAN') {
+  const s = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+  if (!s) return null;
+  if (!PAN_RE.test(s)) {
+    throw new ValidationError(`${field} is not a valid PAN`);
+  }
+  return s;
+}
+
+/** Coerce a value to boolean, defaulting when absent (rather than `!!undefined`). */
+function boolean(raw, { fallback = false } = {}) {
+  if (isBlank(raw)) return fallback;
+  return raw === true || raw === 'true';
+}
+
 module.exports = {
   nonNegativeNumber, id, requiredString, optionalString,
-  password, username,
+  password, username, gstin, pan, boolean,
   PASSWORD_MIN,
 };

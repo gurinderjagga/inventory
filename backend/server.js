@@ -1,14 +1,57 @@
 const config = require('./config');   // must load first — populates process.env
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
 const { initDB, closeDB } = require('./database/db');
+const { apiLimiter } = require('./middleware/rateLimit');
 const { ensureAdminUser, DEFAULT_ADMIN } = require('./database/seed');
 
 const app = express();
 const PORT = config.PORT;
+
+// ── Behind a proxy ───────────────────────────────────────────
+// Vercel and most hosts terminate TLS in front of the app, so req.ip is the
+// proxy unless we say otherwise — which would make the rate limiter count every
+// visitor as one client. Trusting exactly one hop reads the last entry of
+// X-Forwarded-For; trusting `true` would take the first, which the client can
+// forge to dodge the limiter entirely.
+app.set('trust proxy', 1);
+
+// ── Security headers ─────────────────────────────────────────
+// HSTS, X-Content-Type-Options, Referrer-Policy and friends.
+//
+// The CSP is written out rather than left at helmet's default because this
+// server also serves the built React app, whose index.html pulls Inter from
+// Google Fonts — the default policy would block the stylesheet and the font
+// files and leave the UI in a fallback face.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:  ["'self'"],
+      scriptSrc:   ["'self'"],
+      // Vite inlines critical styles, and several components set style="".
+      styleSrc:    ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc:     ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      imgSrc:      ["'self'", 'data:', 'blob:'],
+      // The API may be on another origin; the allowlist decides who may call it.
+      connectSrc:  ["'self'", ...config.CORS_ORIGINS],
+      objectSrc:   ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri:     ["'self'"],
+      formAction:  ["'self'"],
+      upgradeInsecureRequests: config.isProduction ? [] : null,
+    },
+  },
+  // The PDF endpoint is opened in a new tab from the frontend, which is a
+  // different origin in the split deployment. same-origin would block it.
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  // Opting out of Chrome's origin isolation, which the split deployment does
+  // not need and which complicates opening the PDF in a new window.
+  crossOriginOpenerPolicy: false,
+}));
 
 // ── CORS ─────────────────────────────────────────────────────
 // Only mounted when the frontend lives on another origin. `credentials: true`
@@ -89,10 +132,16 @@ app.use((req, res, next) => {
 });
 
 // ── API Routes ───────────────────────────────────────────────
+// The broad limiter covers /api only — the SPA's own assets are static files
+// and a hard refresh should never be throttled.
+app.use('/api', apiLimiter);
+
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/companies', require('./routes/companies'));
 app.use('/api/items', require('./routes/items'));
+app.use('/api/customers', require('./routes/customers'));
+app.use('/api/goods-receipts', require('./routes/goodsReceipts'));
 app.use('/api/invoices', require('./routes/invoices'));
 
 // ── Unknown API Routes ───────────────────────────────────────

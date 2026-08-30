@@ -138,6 +138,37 @@ Run from the repository root:
 | `npm run seed`        | Create schema, admin user, and demo data (idempotent)      |
 | `npm run build`       | Build the frontend to `frontend/dist`                      |
 | `npm start`           | Production: serve API **and** the built frontend on `PORT`  |
+| `npm test`            | Run the API test suite (from `backend/`)                    |
+
+---
+
+## Tests
+
+```bash
+cd backend && npm test
+```
+
+Integration tests over the real HTTP API and a real Postgres — no mocks, because
+the things most worth protecting here are transactional: stock deducted exactly
+once, a failed finalize rolling back completely, a deleted account losing access
+on its next request.
+
+**Where they run.** Set `TEST_DATABASE_URL` and that database is used as-is.
+Without it the tests fall back to `DATABASE_URL` but confine themselves to a
+`stockflow_test` schema, created and dropped around each run. `public` is never
+read or written. Neon's pooled endpoint rejects the connection parameter this
+needs, so the fallback rewrites the host to the direct endpoint automatically.
+
+**Speed.** The suite is latency-bound, not CPU-bound: against a hosted database
+every request is a round trip, and the whole run takes a couple of minutes.
+Point `TEST_DATABASE_URL` at a local Postgres for a fast edit-test loop.
+
+**Concurrency tests.** Firing two requests at once does not reproduce a race
+over a network — the second usually lands after the first has committed, and
+the test passes whether or not the locking is correct. The finalize race test
+instead holds a row lock from the test itself to force the interleaving. It was
+checked by deleting the `FOR UPDATE` from the route: the naive version passed
+three runs out of three, the current one fails as it should.
 
 ---
 

@@ -80,6 +80,19 @@ export const api = {
   createItem: (d) => request('POST', '/api/items', d),
   updateItem: (id, d) => request('PUT', `/api/items/${id}`, d),
   deleteItem: (id) => request('DELETE', `/api/items/${id}`),
+  adjustItemQuantity: (id, d) => request('POST', `/api/items/${id}/adjust`, d),
+  getItemMovements: (id) => request('GET', `/api/items/${id}/movements`),
+
+  // Goods receipts
+  getGoodsReceipts: (cid) => request('GET', `/api/goods-receipts/company/${cid}`),
+  getGoodsReceipt: (id) => request('GET', `/api/goods-receipts/${id}`),
+  createGoodsReceipt: (d) => request('POST', '/api/goods-receipts', d),
+
+  // Customers
+  getCustomers: (cid) => request('GET', `/api/customers/company/${cid}`),
+  createCustomer: (d) => request('POST', '/api/customers', d),
+  updateCustomer: (id, d) => request('PUT', `/api/customers/${id}`, d),
+  deleteCustomer: (id) => request('DELETE', `/api/customers/${id}`),
 
   // Invoices
   getInvoices: () => request('GET', '/api/invoices'),
@@ -87,6 +100,7 @@ export const api = {
   createInvoice: (d) => request('POST', '/api/invoices', d),
   updateInvoice: (id, d) => request('PUT', `/api/invoices/${id}`, d),
   finalizeInvoice: (id) => request('POST', `/api/invoices/${id}/finalize`),
+  reverseInvoice: (id) => request('POST', `/api/invoices/${id}/reverse`),
   deleteInvoice: (id) => request('DELETE', `/api/invoices/${id}`),
   getInvoiceStats: () => request('GET', '/api/invoices/summary/stats'),
   // A real link the browser follows, so it needs the absolute URL. The cookie

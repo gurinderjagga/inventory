@@ -5,24 +5,28 @@ import { useAuth } from '../contexts/AuthContext.jsx';
 import { pageVariants } from '../lib/motion.js';
 import ChangePasswordModal from './ChangePasswordModal.jsx';
 import {
-  IconDashboard, IconCompany, IconStock, IconInvoice, IconUsers,
+  IconDashboard, IconCompany, IconStock, IconInvoice, IconUsers, IconCustomer, IconGoodsReceipt,
   IconBrand, IconLogout, IconKey, IconMenu, IconClose, ICON_MD, ICON_LG,
 } from '../lib/icons.jsx';
 
 const NAV = [
-  { to: '/',          label: 'Dashboard', Icon: IconDashboard, exact: true },
-  { to: '/companies', label: 'Companies', Icon: IconCompany },
-  { to: '/stock',     label: 'Stock',     Icon: IconStock },
-  { to: '/invoices',  label: 'Invoices',  Icon: IconInvoice },
-  { to: '/users',     label: 'Users',     Icon: IconUsers },
+  { to: '/',              label: 'Dashboard',      Icon: IconDashboard, exact: true },
+  { to: '/companies',     label: 'Companies',      Icon: IconCompany },
+  { to: '/stock',         label: 'Stock',          Icon: IconStock },
+  { to: '/customers',     label: 'Customers',      Icon: IconCustomer },
+  { to: '/goods-receipts',label: 'Goods Receipts', Icon: IconGoodsReceipt },
+  { to: '/invoices',      label: 'Invoices',       Icon: IconInvoice },
+  { to: '/users',         label: 'Users',          Icon: IconUsers },
 ];
 
 const PAGE_TITLES = {
-  '/':          'Dashboard',
-  '/companies': 'Companies',
-  '/stock':     'Stock Management',
-  '/invoices':  'Invoices',
-  '/users':     'User Accounts',
+  '/':               'Dashboard',
+  '/companies':      'Companies',
+  '/stock':          'Stock Management',
+  '/customers':      'Customers',
+  '/goods-receipts': 'Goods Receipts',
+  '/invoices':       'Invoices',
+  '/users':          'User Accounts',
 };
 
 export default function Layout() {

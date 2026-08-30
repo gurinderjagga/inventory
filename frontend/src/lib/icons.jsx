@@ -18,6 +18,7 @@ import {
   AlertTriangle, AlertCircle, Info,
   Eye, FileDown, FilePlus2, ArrowLeft, ArrowUpCircle, ChevronRight,
   Boxes, Clock, Menu, ArrowUp, ArrowDown, ChevronsUpDown, RefreshCw, EyeOff,
+  Archive, ArchiveRestore, Contact, Truck, History, SlidersHorizontal, Undo2,
 } from 'lucide-react';
 
 /* Navigation & entities */
@@ -26,6 +27,7 @@ export const IconCompany   = Building2;
 export const IconStock     = Package;
 export const IconInvoice   = ReceiptText;
 export const IconUsers     = UsersIcon;
+export const IconCustomer  = Contact;
 export const IconBrand     = Boxes;
 
 /* Account */
@@ -53,6 +55,12 @@ export const IconClose      = X;
 export const IconMenu       = Menu;
 export const IconRefresh    = RefreshCw;
 export const IconHide       = EyeOff;
+export const IconArchive    = Archive;
+export const IconRestore    = ArchiveRestore;
+export const IconGoodsReceipt = Truck;
+export const IconHistory      = History;
+export const IconAdjust       = SlidersHorizontal;
+export const IconReverse      = Undo2;
 
 /* Table sorting */
 export const IconSortAsc  = ArrowUp;

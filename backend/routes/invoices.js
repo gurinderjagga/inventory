@@ -5,7 +5,9 @@ const { authMiddleware } = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/asyncHandler');
 const { ValidationError, NotFoundError, ConflictError } = require('../lib/errors');
 const v = require('../lib/validate');
+const money = require('../lib/money');
 const { formatAmount } = require('../lib/currency');
+const { applyMovement } = require('../lib/stockLedger');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -61,10 +63,31 @@ async function normalizeLines(companyId, line_items) {
   return lines.map(l => ({ ...l, itemName: nameById.get(l.itemId) }));
 }
 
-/** Money totals for a set of normalised lines. */
+/**
+ * Money totals for a set of normalised lines.
+ *
+ * Every step goes through lib/money.js rather than JavaScript arithmetic: the
+ * old version computed `quantity * unitPrice` on doubles, so a three-line
+ * invoice could store a total a paisa away from the sum of its own printed
+ * lines. The subtotal is the sum of the ROUNDED line totals, deliberately —
+ * that is the figure each line shows, and an invoice whose lines do not add up
+ * to its total is indefensible in front of an auditor.
+ */
 function invoiceTotals(lines, taxRate) {
-  const subtotal = lines.reduce((sum, l) => sum + l.quantity * l.unitPrice, 0);
-  return { subtotal, total: subtotal + subtotal * (taxRate / 100) };
+  const subtotal = money.sum(lines.map(l => money.lineTotal(l.quantity, l.unitPrice)));
+  const tax      = money.taxOn(subtotal, taxRate);
+  return { subtotal, total: money.sum([subtotal, tax]) };
+}
+
+/**
+ * A draft is the only editable/deletable state — both `finalized` and
+ * `reversed` are terminal, for the same reason: each is part of the
+ * financial/inventory record once it happens, not a thing to quietly rewrite.
+ */
+function assertIsDraft(status, action) {
+  if (status === 'draft') return;
+  const already = status === 'finalized' ? 'finalized' : 'reversed';
+  throw new ConflictError(`This invoice has been ${already} and can no longer be ${action}.`);
 }
 
 /** Write the line items of an invoice, replacing whatever is already there. */
@@ -74,7 +97,11 @@ async function writeLines(client, invoiceId, lines) {
     await client.query(
       `INSERT INTO invoice_line_items (invoice_id, item_id, item_name, quantity, unit_price, line_total)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [invoiceId, l.itemId, l.itemName, l.quantity, l.unitPrice, l.quantity * l.unitPrice]
+      [
+        invoiceId, l.itemId, l.itemName,
+        money.quantity(l.quantity), money.money(l.unitPrice),
+        money.lineTotal(l.quantity, l.unitPrice),
+      ]
     );
   }
 }
@@ -131,29 +158,81 @@ router.get('/:id', asyncHandler(async (req, res) => {
   res.json(invoice);
 }));
 
+const isBlank = (val) => val === undefined || val === null || val === '';
+
+/**
+ * Resolve the billed customer, scoped to the invoice's own company — the same
+ * anti-cross-tenant guard normalizeLines() applies to items, so one company
+ * cannot bill against another company's customer record.
+ *
+ * customer_id is the primary link; customer_name/customer_email are kept as a
+ * manual override (or a fallback for a caller that hasn't migrated to picking
+ * a saved customer yet) rather than removed outright.
+ */
+async function resolveCustomer(companyId, { customer_id, customer_name, customer_email }) {
+  let name = v.optionalString(customer_name);
+  let customerId = null;
+
+  if (!isBlank(customer_id)) {
+    customerId = v.id(customer_id, 'customer_id');
+    const { rows } = await query(
+      'SELECT id, name FROM customers WHERE id = $1 AND company_id = $2',
+      [customerId, companyId]
+    );
+    if (!rows[0]) throw new ValidationError('No such customer for this company');
+    name = name || rows[0].name;
+  }
+
+  if (!name) throw new ValidationError('customer_name is required');
+  return { customerId, name, email: v.optionalString(customer_email) };
+}
+
+/**
+ * Freeze the supplier's own GST identity onto the invoice at issue — a company
+ * that later registers, or moves state, must not retroactively change a
+ * document already sent. Also enforces that only a registered supplier may
+ * charge tax at all (Section 122); the database's own CHECK backs this up.
+ */
+function snapshotSupplier(company, taxRate) {
+  if (taxRate > 0 && !company.gstin) {
+    throw new ValidationError('Cannot charge tax without a supplier GSTIN');
+  }
+  return {
+    gstin:     company.gstin || null,
+    name:      company.legal_name || company.name,
+    address:   company.address || null,
+    stateCode: company.state_code || null,
+  };
+}
+
 // POST /api/invoices  — create draft invoice (atomic via transaction)
 router.post('/', asyncHandler(async (req, res) => {
-  const { company_id, customer_name, customer_email, notes, tax_rate, line_items } = req.body;
+  const { company_id, notes, tax_rate, line_items } = req.body;
 
   const companyId   = v.id(company_id, 'company_id');
-  const customerNm  = v.requiredString(customer_name, 'customer_name');
   const taxRate     = v.nonNegativeNumber(tax_rate, 'Tax rate', { fallback: 0 });
 
-  const { rows: company } = await query('SELECT id FROM companies WHERE id = $1', [companyId]);
+  const { rows: company } = await query('SELECT * FROM companies WHERE id = $1', [companyId]);
   if (!company[0]) throw new NotFoundError('Company not found');
 
+  const customer = await resolveCustomer(companyId, req.body);
+  const supplier = snapshotSupplier(company[0], taxRate);
   const lines = await normalizeLines(companyId, line_items);
   const { subtotal, total } = invoiceTotals(lines, taxRate);
 
   const invoice = await runTransaction(async (client) => {
     const { rows } = await client.query(
-      `INSERT INTO invoices (invoice_no, company_id, customer_name, customer_email, notes, subtotal, tax_rate, total, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft')
+      `INSERT INTO invoices
+         (invoice_no, company_id, customer_id, customer_name, customer_email, notes,
+          subtotal, tax_rate, total, status,
+          supplier_gstin, supplier_name, supplier_address, supplier_state_code)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', $10, $11, $12, $13)
        RETURNING *`,
       [
-        generateInvoiceNo(), companyId, customerNm,
-        v.optionalString(customer_email), v.optionalString(notes),
+        generateInvoiceNo(), companyId, customer.customerId, customer.name,
+        customer.email, v.optionalString(notes),
         subtotal, taxRate, total,
+        supplier.gstin, supplier.name, supplier.address, supplier.stateCode,
       ]
     );
     const created = rows[0];
@@ -172,9 +251,8 @@ router.post('/', asyncHandler(async (req, res) => {
 // would orphan every line item against another tenant's stock.
 router.put('/:id', asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Invoice id');
-  const { customer_name, customer_email, notes, tax_rate, line_items } = req.body;
+  const { notes, tax_rate, line_items } = req.body;
 
-  const customerNm = v.requiredString(customer_name, 'customer_name');
   const taxRate    = v.nonNegativeNumber(tax_rate, 'Tax rate', { fallback: 0 });
 
   const { rows: existing } = await query(
@@ -183,12 +261,15 @@ router.put('/:id', asyncHandler(async (req, res) => {
   );
   const current = existing[0];
   if (!current) throw new NotFoundError('Invoice not found');
-  if (current.status === 'finalized') {
-    throw new ConflictError(
-      'This invoice has been finalized and can no longer be edited.'
-    );
-  }
+  assertIsDraft(current.status, 'edited');
 
+  // The company itself is immutable on edit, but the GSTIN-vs-tax rule is
+  // re-checked here too: tax_rate can change on a draft, and the supplier
+  // snapshot taken at creation must still justify it.
+  const { rows: company } = await query('SELECT * FROM companies WHERE id = $1', [current.company_id]);
+  snapshotSupplier(company[0], taxRate);
+
+  const customer = await resolveCustomer(current.company_id, req.body);
   const lines = await normalizeLines(current.company_id, line_items);
   const { subtotal, total } = invoiceTotals(lines, taxRate);
 
@@ -200,18 +281,16 @@ router.put('/:id', asyncHandler(async (req, res) => {
       [id]
     );
     if (!locked[0]) throw new NotFoundError('Invoice not found');
-    if (locked[0].status === 'finalized') {
-      throw new ConflictError('This invoice has been finalized and can no longer be edited.');
-    }
+    assertIsDraft(locked[0].status, 'edited');
 
     const { rows } = await client.query(
       `UPDATE invoices
-       SET customer_name = $1, customer_email = $2, notes = $3,
-           subtotal = $4, tax_rate = $5, total = $6
-       WHERE id = $7
+       SET customer_id = $1, customer_name = $2, customer_email = $3, notes = $4,
+           subtotal = $5, tax_rate = $6, total = $7, updated_at = now()
+       WHERE id = $8
        RETURNING *`,
       [
-        customerNm, v.optionalString(customer_email), v.optionalString(notes),
+        customer.customerId, customer.name, customer.email, v.optionalString(notes),
         subtotal, taxRate, total, id,
       ]
     );
@@ -251,25 +330,12 @@ router.post('/:id/finalize', asyncHandler(async (req, res) => {
     }
 
     for (const line of lineItems) {
-      // Atomically deduct — only updates if stock is sufficient.
-      const { rowCount } = await client.query(
-        `UPDATE items
-         SET quantity = quantity - $1
-         WHERE id = $2 AND quantity >= $3`,
-        [line.quantity, line.item_id, line.quantity]
-      );
-
-      if (rowCount === 0) {
-        const { rows } = await client.query(
-          'SELECT name, quantity FROM items WHERE id = $1',
-          [line.item_id]
-        );
-        const item = rows[0];
-        throw new ConflictError(
-          `Insufficient stock for "${item?.name || 'unknown item'}". ` +
-          `Available: ${item ? item.quantity : 0}, Requested: ${line.quantity}`
-        );
-      }
+      // Ledgered, atomic deduction — throws ConflictError if stock is short.
+      await applyMovement(client, {
+        itemId: line.item_id, companyId: invoice.company_id,
+        delta: -line.quantity, reason: 'invoice_finalize',
+        invoiceId: id, userId: req.user.id,
+      });
     }
 
     const { rows } = await client.query(
@@ -282,6 +348,50 @@ router.post('/:id/finalize', asyncHandler(async (req, res) => {
   res.json({ message: 'Invoice finalized and stock deducted successfully', invoice: updated });
 }));
 
+// POST /api/invoices/:id/reverse  — restore stock through the ledger
+//
+// The statutory document wrapping this (a credit note) is Phase 4's job; this
+// is only the mechanism. A reversed invoice is exactly as immutable as a
+// finalized one afterward — it is part of the record, not a draft again.
+router.post('/:id/reverse', asyncHandler(async (req, res) => {
+  const id = v.id(req.params.id, 'Invoice id');
+
+  const updated = await runTransaction(async (client) => {
+    const { rows: invRows } = await client.query(
+      'SELECT * FROM invoices WHERE id = $1 FOR UPDATE',
+      [id]
+    );
+    const invoice = invRows[0];
+    if (!invoice) throw new NotFoundError('Invoice not found');
+    if (invoice.status === 'draft') {
+      throw new ConflictError('A draft has not deducted any stock, so there is nothing to reverse.');
+    }
+    if (invoice.status === 'reversed') {
+      throw new ConflictError('This invoice has already been reversed');
+    }
+
+    const { rows: lineItems } = await client.query(
+      'SELECT * FROM invoice_line_items WHERE invoice_id = $1',
+      [id]
+    );
+    for (const line of lineItems) {
+      await applyMovement(client, {
+        itemId: line.item_id, companyId: invoice.company_id,
+        delta: line.quantity, reason: 'invoice_reversal',
+        invoiceId: id, userId: req.user.id,
+      });
+    }
+
+    const { rows } = await client.query(
+      `UPDATE invoices SET status = 'reversed' WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    return rows[0];
+  });
+
+  res.json({ message: 'Invoice reversed and stock restored', invoice: updated });
+}));
+
 // DELETE /api/invoices/:id  — only drafts can be deleted
 router.delete('/:id', asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Invoice id');
@@ -292,9 +402,10 @@ router.delete('/:id', asyncHandler(async (req, res) => {
   );
   const invoice = rows[0];
   if (!invoice) throw new NotFoundError('Invoice not found');
-  if (invoice.status === 'finalized') {
+  if (invoice.status !== 'draft') {
     throw new ConflictError(
-      'Finalized invoices cannot be deleted — they are part of your financial record.'
+      `${invoice.status === 'finalized' ? 'Finalized' : 'Reversed'} invoices cannot be deleted — ` +
+      `they are part of your financial record.`
     );
   }
   await query('DELETE FROM invoices WHERE id = $1', [id]);
@@ -334,12 +445,19 @@ router.get('/:id/pdf', asyncHandler(async (req, res) => {
     .text(`Date: ${new Date(invoice.created_at).toLocaleDateString()}`, 50, 95)
     .text(`Status: ${invoice.status.toUpperCase()}`, 50, 110);
 
+  // Supplier name/address shown here is the frozen snapshot taken at issue,
+  // not a live join — a company that re-registers or moves state afterward
+  // must not retroactively change a document already sent. Falls back to the
+  // live company row only for invoices created before this snapshot existed.
   doc.fontSize(12).font('Helvetica-Bold').fillColor('#1e293b')
-    .text(invoice.company_name, 300, 50, { align: 'right', width: 245 });
+    .text(invoice.supplier_name || invoice.company_name, 300, 50, { align: 'right', width: 245 });
   doc.fontSize(9).font('Helvetica').fillColor('#64748b')
     .text(invoice.company_email || '', 300, 67, { align: 'right', width: 245 })
     .text(invoice.company_phone || '', 300, 80, { align: 'right', width: 245 })
-    .text(invoice.company_address || '', 300, 93, { align: 'right', width: 245 });
+    .text(invoice.supplier_address || invoice.company_address || '', 300, 93, { align: 'right', width: 245 });
+  if (invoice.supplier_gstin) {
+    doc.text(`GSTIN: ${invoice.supplier_gstin}`, 300, 106, { align: 'right', width: 245 });
+  }
 
   // ── Bill To ─────────────────────────────────────────────
   doc.moveTo(50, 130).lineTo(545, 130).strokeColor('#e2e8f0').lineWidth(1).stroke();
