@@ -4,15 +4,19 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import { pageVariants } from '../lib/motion.js';
 import ChangePasswordModal from './ChangePasswordModal.jsx';
+import {
+  IconDashboard, IconCompany, IconStock, IconInvoice, IconUsers,
+  IconBrand, IconLogout, IconKey, ICON_MD, ICON_LG,
+} from '../lib/icons.jsx';
 
 // `adminOnly` items are hidden from company admins. This is presentation only —
 // the API refuses them regardless of what the sidebar shows.
 const NAV = [
-  { to: '/',          label: 'Dashboard', icon: 'bi-grid-1x2-fill', exact: true },
-  { to: '/companies', label: 'Companies', icon: 'bi-building-fill', tenantLabel: 'My Company' },
-  { to: '/stock',     label: 'Stock',     icon: 'bi-box-seam-fill' },
-  { to: '/invoices',  label: 'Invoices',  icon: 'bi-receipt-cutoff' },
-  { to: '/users',     label: 'Users',     icon: 'bi-people-fill', adminOnly: true },
+  { to: '/',          label: 'Dashboard', Icon: IconDashboard, exact: true },
+  { to: '/companies', label: 'Companies', Icon: IconCompany, tenantLabel: 'My Company' },
+  { to: '/stock',     label: 'Stock',     Icon: IconStock },
+  { to: '/invoices',  label: 'Invoices',  Icon: IconInvoice },
+  { to: '/users',     label: 'Users',     Icon: IconUsers, adminOnly: true },
 ];
 
 const PAGE_TITLES = {
@@ -46,7 +50,7 @@ export default function Layout() {
         {/* Brand */}
         <div className="sidebar-brand">
           <div className="brand-logo">
-            <div className="brand-icon">📦</div>
+            <div className="brand-icon"><IconBrand size={ICON_LG} color="#fff" /></div>
             <div>
               <div className="brand-text">StockFlow</div>
               {/* A company admin works inside one tenant, so name it here. */}
@@ -81,7 +85,7 @@ export default function Layout() {
                       transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.7 }}
                     />
                   )}
-                  <i className={`bi ${item.icon}`} style={{ position: 'relative', zIndex: 1 }} />
+                  <item.Icon size={ICON_MD} style={{ position: 'relative', zIndex: 1, flexShrink: 0 }} />
                   <span style={{ position: 'relative', zIndex: 1 }}>
                     {!isAdmin && item.tenantLabel ? item.tenantLabel : item.label}
                   </span>
@@ -101,11 +105,11 @@ export default function Layout() {
                 {isAdmin ? 'Platform Admin' : 'Company Admin'}
               </div>
             </div>
-            <button className="btn-logout" onClick={() => setPwOpen(true)} title="Change Password">
-              <i className="bi bi-key" />
+            <button className="btn-logout" onClick={() => setPwOpen(true)} title="Change password" aria-label="Change password">
+              <IconKey size={ICON_MD} />
             </button>
-            <button className="btn-logout" onClick={handleLogout} title="Sign Out">
-              <i className="bi bi-box-arrow-right" />
+            <button className="btn-logout" onClick={handleLogout} title="Sign out" aria-label="Sign out">
+              <IconLogout size={ICON_MD} />
             </button>
           </div>
         </div>

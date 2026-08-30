@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
 import { listContainer, listItem, hoverLift } from '../lib/motion.js';
+import { formatCurrency, formatCurrencyShort } from '../lib/format.js';
 import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import { IconAlert, IconBack, IconCheck, IconChevron, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconStock, IconSuccess, IconWarning, ICON_MD } from '../lib/icons.jsx';
 
 const UNITS = ['pcs', 'boxes', 'reams', 'kg', 'liters', 'sets', 'packs', 'rolls', 'pairs'];
 const EMPTY_FORM = { name: '', sku: '', unit: 'pcs', quantity: '', unit_price: '', low_stock_threshold: '10' };
@@ -146,7 +148,7 @@ export default function Stock() {
         </div>
         {companies.length === 0 ? (
           <div className="empty-state">
-            <i className="bi bi-building" />
+            <IconCompany size={ICON_MD} />
             <h3>No companies yet</h3>
             <p>Add companies from the Companies page first.</p>
           </div>
@@ -158,7 +160,7 @@ export default function Stock() {
                 <motion.div key={c.id} className="company-card" onClick={() => selectCompany(c)} role="button" tabIndex={0}
                      variants={listItem} {...hoverLift}
                      onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && selectCompany(c)}>
-                  <div className="company-card-icon"><i className="bi bi-building-fill" /></div>
+                  <div className="company-card-icon"><IconCompany size={ICON_MD} /></div>
                   <h3>{c.name}</h3>
                   <div className="company-card-meta">{c.email || ''}{c.phone ? ' · ' + c.phone : ''}</div>
                   <div className="company-card-stats">
@@ -171,11 +173,11 @@ export default function Stock() {
                       <span className="lbl">Low Stock</span>
                     </div>
                     <div className="company-card-stat">
-                      <span className="val" style={{ color: 'var(--success)', fontSize: 14 }}>${Number(c.stock_value || 0).toFixed(0)}</span>
+                      <span className="val" style={{ color: 'var(--success)', fontSize: 14 }}>{formatCurrencyShort(c.stock_value)}</span>
                       <span className="lbl">Value</span>
                     </div>
                   </div>
-                  {low > 0 && <div style={{ marginTop: 12 }}><span className="badge badge-warning"><i className="bi bi-exclamation-triangle" /> {low} items low</span></div>}
+                  {low > 0 && <div style={{ marginTop: 12 }}><span className="badge badge-warning"><IconWarning size={ICON_MD} /> {low} items low</span></div>}
                 </motion.div>
               );
             })}
@@ -199,7 +201,7 @@ export default function Stock() {
           <button onClick={goBack} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, padding: 0 }}>
             Stock
           </button>
-          <i className="bi bi-chevron-right" style={{ fontSize: 10 }} />
+          <IconChevron size={ICON_MD} style={{ fontSize: 10 }} />
           <span className="current">{selected.name}</span>
         </div>
       )}
@@ -213,15 +215,15 @@ export default function Stock() {
         <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
           {isAdmin && (
             <button className="btn btn-secondary" onClick={goBack}>
-              <i className="bi bi-arrow-left" /> All Companies
+              <IconBack size={ICON_MD} /> All Companies
             </button>
           )}
           <div className="search-wrap">
-            <i className="bi bi-search" />
+            <IconSearch size={ICON_MD} />
             <input placeholder="Search items…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <button className="btn btn-primary" onClick={openAdd}>
-            <i className="bi bi-plus-lg" /> Add Item
+            <IconPlus size={ICON_MD} /> Add Item
           </button>
         </div>
       </div>
@@ -230,7 +232,7 @@ export default function Stock() {
         <div className="loading-page"><div className="spinner" /></div>
       ) : filteredItems.length === 0 ? (
         <div className="empty-state">
-          <i className="bi bi-box-seam" />
+          <IconStock size={ICON_MD} />
           <h3>No items found</h3>
           <p>Add your first stock item using the button above.</p>
         </div>
@@ -269,17 +271,17 @@ export default function Stock() {
                         </div>
                       </div>
                     </td>
-                    <td>${parseFloat(item.unit_price).toFixed(2)}</td>
-                    <td style={{ fontWeight: 600, color: 'var(--success)' }}>${(item.quantity * item.unit_price).toFixed(2)}</td>
+                    <td>{formatCurrency(item.unit_price)}</td>
+                    <td style={{ fontWeight: 600, color: 'var(--success)' }}>{formatCurrency(item.quantity * item.unit_price)}</td>
                     <td>
                       {isLow
-                        ? <span className="badge badge-warning"><i className="bi bi-exclamation-triangle" /> Low</span>
-                        : <span className="badge badge-success"><i className="bi bi-check-circle" /> OK</span>}
+                        ? <span className="badge badge-warning"><IconWarning size={ICON_MD} /> Low</span>
+                        : <span className="badge badge-success"><IconSuccess size={ICON_MD} /> OK</span>}
                     </td>
                     <td>
                       <div className="td-actions">
-                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(item)}><i className="bi bi-pencil" /></button>
-                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: item.id, name: item.name })}><i className="bi bi-trash3" /></button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(item)}><IconEdit size={ICON_MD} /></button>
+                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: item.id, name: item.name })}><IconDelete size={ICON_MD} /></button>
                       </div>
                     </td>
                   </motion.tr>
@@ -297,7 +299,7 @@ export default function Stock() {
           <>
             <button className="btn btn-secondary" onClick={closeModal}>Cancel</button>
             <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-              {saving ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</> : <><i className="bi bi-check-lg" /> {modal?.mode === 'add' ? 'Add Item' : 'Save Changes'}</>}
+              {saving ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</> : <><IconCheck size={ICON_MD} /> {modal?.mode === 'add' ? 'Add Item' : 'Save Changes'}</>}
             </button>
           </>
         }
@@ -317,7 +319,7 @@ export default function Stock() {
           <div className="form-group"><label>Quantity <span style={{ color: 'var(--danger)' }}>*</span></label>
             <input type="number" min="0" step="0.01" placeholder="0" {...field('quantity')} />
           </div>
-          <div className="form-group"><label>Unit Price ($) <span style={{ color: 'var(--danger)' }}>*</span></label>
+          <div className="form-group"><label>Unit Price (₹) <span style={{ color: 'var(--danger)' }}>*</span></label>
             <input type="number" min="0" step="0.01" placeholder="0.00" {...field('unit_price')} />
           </div>
         </div>
@@ -325,7 +327,7 @@ export default function Stock() {
           <input type="number" min="0" placeholder="10" {...field('low_stock_threshold')} />
           <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>Alert when quantity falls at or below this value</small>
         </div>
-        {formErr && <div className="login-error"><i className="bi bi-exclamation-circle" /><span>{formErr}</span></div>}
+        {formErr && <div className="login-error"><IconAlert size={ICON_MD} /><span>{formErr}</span></div>}
       </Modal>
 
       <ConfirmDialog isOpen={!!confirm} title="Delete Item"

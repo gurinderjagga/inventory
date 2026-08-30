@@ -2,6 +2,7 @@ import { useState } from 'react';
 import Modal from './Modal.jsx';
 import { api, isAuthError } from '../api.js';
 import { useToast } from '../contexts/ToastContext.jsx';
+import { IconAlert, IconCheck, ICON_MD } from '../lib/icons.jsx';
 
 const EMPTY = { current: '', next: '', confirm: '' };
 
@@ -48,7 +49,7 @@ export default function ChangePasswordModal({ isOpen, onClose }) {
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
             {saving
               ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</>
-              : <><i className="bi bi-check-lg" /> Change Password</>}
+              : <><IconCheck size={ICON_MD} /> Change Password</>}
           </button>
         </>
       }
@@ -70,7 +71,7 @@ export default function ChangePasswordModal({ isOpen, onClose }) {
       </div>
       {err && (
         <div className="login-error">
-          <i className="bi bi-exclamation-circle" /><span>{err}</span>
+          <IconAlert size={ICON_MD} /><span>{err}</span>
         </div>
       )}
     </Modal>

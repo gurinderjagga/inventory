@@ -3,6 +3,7 @@ import { useNavigate, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { cardVariants } from '../lib/motion.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
+import { IconAlert, IconBrand, IconLock, IconShield, IconUser, ICON_MD } from '../lib/icons.jsx';
 
 export default function Login() {
   const { login, user, loading: authLoading } = useAuth();
@@ -39,7 +40,7 @@ export default function Login() {
       <motion.div className="login-card" variants={cardVariants} initial="initial" animate="animate">
         {/* Brand */}
         <div className="login-brand">
-          <div className="login-brand-icon">📦</div>
+          <div className="login-brand-icon"><IconBrand size={26} color="#fff" /></div>
           <h1>StockFlow</h1>
           <p>Inventory Management &amp; Invoicing</p>
         </div>
@@ -47,7 +48,7 @@ export default function Login() {
         {/* Error */}
         {error && (
           <div className="login-error">
-            <i className="bi bi-exclamation-circle" />
+            <IconAlert size={ICON_MD} />
             <span>{error}</span>
           </div>
         )}
@@ -57,7 +58,7 @@ export default function Login() {
           <div className="form-group">
             <label htmlFor="login-username">Username</label>
             <div className="input-icon-wrap">
-              <i className="bi bi-person" />
+              <IconUser size={ICON_MD} />
               <input
                 id="login-username"
                 type="text"
@@ -73,7 +74,7 @@ export default function Login() {
           <div className="form-group">
             <label htmlFor="login-password">Password</label>
             <div className="input-icon-wrap">
-              <i className="bi bi-lock" />
+              <IconLock size={ICON_MD} />
               <input
                 id="login-password"
                 type="password"
@@ -98,7 +99,7 @@ export default function Login() {
         </form>
 
         <div className="login-footer">
-          <i className="bi bi-shield-lock" /> Secured with JWT authentication
+          <IconShield size={ICON_MD} /> Secured with JWT authentication
         </div>
       </motion.div>
     </div>

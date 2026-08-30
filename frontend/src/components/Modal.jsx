@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { backdropVariants, modalVariants } from '../lib/motion.js';
+import { IconClose, ICON_MD } from '../lib/icons.jsx';
 
 /**
  * Generic modal — rendered via portal into #modal-root
@@ -52,7 +53,7 @@ export default function Modal({ isOpen, onClose, title, size = '', children, foo
             <div className="modal-header">
               <h3 className="modal-title">{title}</h3>
               <button className="modal-close" onClick={onClose} aria-label="Close">
-                <i className="bi bi-x-lg" />
+                <IconClose size={ICON_MD} />
               </button>
             </div>
             <div className="modal-body">{children}</div>

@@ -4,8 +4,11 @@ import { useNavigate } from 'react-router-dom';
 import { api, isAuthError } from '../api.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import { listContainer, listItem } from '../lib/motion.js';
+import { formatCurrency } from '../lib/format.js';
+import { IconCompany, IconStock, IconInvoice, IconAlert, IconWarning, IconSuccess, IconPending,
+         IconPlusCircle, IconChevron, ICON_MD, ICON_LG } from '../lib/icons.jsx';
 
-function KpiCard({ label, value, icon, accent }) {
+function KpiCard({ label, value, Icon, accent }) {
   return (
     <motion.div className="db-kpi" style={{ '--kpi-accent': accent }} variants={listItem}>
       <div className="db-kpi-body">
@@ -13,7 +16,7 @@ function KpiCard({ label, value, icon, accent }) {
         {/* Counts up from 0 so the figure registers as data arriving. */}
         <div className="db-kpi-value"><CountUp value={value} /></div>
       </div>
-      <i className={`bi ${icon} db-kpi-icon`} />
+      <Icon size={ICON_LG} className="db-kpi-icon" />
     </motion.div>
   );
 }
@@ -73,7 +76,7 @@ export default function Dashboard() {
 
   if (error) return (
     <div className="db-empty" style={{ height: 300 }}>
-      <i className="bi bi-exclamation-circle" style={{ fontSize: 36, opacity: .25, marginBottom: 12 }} />
+      <IconAlert size={ICON_MD} style={{ fontSize: 36, opacity: .25, marginBottom: 12 }} />
       <p>{error}</p>
     </div>
   );
@@ -88,7 +91,7 @@ export default function Dashboard() {
       {/* Low-stock alert */}
       {totalLowStock > 0 && (
         <div className="db-alert">
-          <i className="bi bi-exclamation-triangle" />
+          <IconWarning size={ICON_MD} />
           <span>
             <strong>{totalLowStock} item{totalLowStock > 1 ? 's' : ''}</strong> running low on stock —&nbsp;
             <button className="db-alert-link" onClick={() => navigate('/stock')}>
@@ -100,10 +103,10 @@ export default function Dashboard() {
 
       {/* KPI strip */}
       <motion.div className="db-kpi-row" variants={listContainer} initial="initial" animate="animate">
-        <KpiCard label="Companies"   value={companies.length}  icon="bi-building"           accent="var(--accent)" />
-        <KpiCard label="Stock Items" value={totalItems}        icon="bi-box-seam"           accent="var(--info)" />
-        <KpiCard label="Low Stock"   value={totalLowStock}     icon="bi-exclamation-circle" accent={totalLowStock > 0 ? 'var(--warning)' : 'var(--success)'} />
-        <KpiCard label="Invoices"    value={stats.totalInvoices} icon="bi-receipt"          accent="var(--success)" />
+        <KpiCard label="Companies"   value={companies.length}  Icon={IconCompany} accent="var(--accent)" />
+        <KpiCard label="Stock Items" value={totalItems}        Icon={IconStock} accent="var(--info)" />
+        <KpiCard label="Low Stock"   value={totalLowStock}     Icon={IconAlert} accent={totalLowStock > 0 ? 'var(--warning)' : 'var(--success)'} />
+        <KpiCard label="Invoices"    value={stats.totalInvoices} Icon={IconInvoice} accent="var(--success)" />
       </motion.div>
 
       {/* Main grid */}
@@ -118,7 +121,7 @@ export default function Dashboard() {
 
           {recent.length === 0 ? (
             <div className="db-empty">
-              <i className="bi bi-receipt" style={{ fontSize: 32, opacity: .2, marginBottom: 10 }} />
+              <IconInvoice size={ICON_MD} style={{ fontSize: 32, opacity: .2, marginBottom: 10 }} />
               <p>No invoices yet — create one from the Invoices page.</p>
             </div>
           ) : (
@@ -141,11 +144,13 @@ export default function Dashboard() {
                       <td className="db-company-cell">{inv.company_name}</td>
                       <td className="db-secondary">{inv.customer_name}</td>
                       <td style={{ textAlign: 'right', fontWeight: 600, letterSpacing: '-.3px' }}>
-                        ${parseFloat(inv.total).toFixed(2)}
+                        {formatCurrency(inv.total)}
                       </td>
                       <td>
                         <span className={`db-status db-status-${inv.status}`}>
-                          <i className={`bi bi-${inv.status === 'finalized' ? 'check-circle' : 'clock'}`} />
+                          {inv.status === 'finalized'
+                            ? <IconSuccess size={12} />
+                            : <IconPending size={12} />}
                           {inv.status}
                         </span>
                       </td>
@@ -178,7 +183,7 @@ export default function Dashboard() {
                 const color = low === 0 ? 'var(--success)' : low >= total / 2 ? 'var(--danger)' : 'var(--warning)';
                 return (
                   <div className="db-co-row" key={c.id}>
-                    <div className="db-co-icon"><i className="bi bi-building" /></div>
+                    <div className="db-co-icon"><IconCompany size={ICON_MD} /></div>
                     <div className="db-co-info">
                       <div className="db-co-name">{c.name}</div>
                       <div className="db-co-bar">
@@ -205,18 +210,18 @@ export default function Dashboard() {
             <div className="db-card-title" style={{ marginBottom: 14 }}>Quick Actions</div>
             <div className="db-action-list">
               {[
-                { label: 'New Invoice',    icon: 'bi-plus-circle',    to: '/invoices' },
-                { label: 'Manage Stock',   icon: 'bi-box-seam',       to: '/stock'    },
+                { label: 'New Invoice',  Icon: IconPlusCircle, to: '/invoices' },
+                { label: 'Manage Stock', Icon: IconStock,      to: '/stock'    },
                 // Only a platform admin can add a company; for anyone else this
                 // linked to a page whose action the API refuses.
                 isAdmin
-                  ? { label: 'Add Company',  icon: 'bi-building-add', to: '/companies' }
-                  : { label: 'My Company',   icon: 'bi-building',     to: '/companies' },
+                  ? { label: 'Add Company', Icon: IconCompany, to: '/companies' }
+                  : { label: 'My Company',  Icon: IconCompany, to: '/companies' },
               ].map(a => (
                 <button key={a.label} className="db-action-btn" onClick={() => navigate(a.to)}>
-                  <i className={`bi ${a.icon}`} />
+                  <a.Icon size={ICON_MD} />
                   <span>{a.label}</span>
-                  <i className="bi bi-chevron-right db-action-arrow" />
+                  <IconChevron size={ICON_MD} className="db-action-arrow" />
                 </button>
               ))}
             </div>

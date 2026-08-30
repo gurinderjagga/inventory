@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
 import { listContainer, listItem } from '../lib/motion.js';
+import { formatCurrency } from '../lib/format.js';
 import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconWarning, ICON_MD } from '../lib/icons.jsx';
 
 const EMPTY_FORM = { name: '', email: '', phone: '', address: '' };
 
@@ -116,11 +118,11 @@ export default function Companies() {
         {isAdmin && (
           <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
             <div className="search-wrap">
-              <i className="bi bi-search" />
+              <IconSearch size={ICON_MD} />
               <input placeholder="Search companies…" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
             <button className="btn btn-primary" onClick={openAdd}>
-              <i className="bi bi-plus-lg" /> Add Company
+              <IconPlus size={ICON_MD} /> Add Company
             </button>
           </div>
         )}
@@ -129,7 +131,7 @@ export default function Companies() {
       {/* Table */}
       {filtered.length === 0 ? (
         <div className="empty-state">
-          <i className="bi bi-building" />
+          <IconCompany size={ICON_MD} />
           <h3>No companies found</h3>
           <p>Add your first company using the button above.</p>
         </div>
@@ -152,7 +154,7 @@ export default function Companies() {
                 <motion.tr key={c.id} variants={listItem}>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div className="company-avatar-icon"><i className="bi bi-building-fill" /></div>
+                      <div className="company-avatar-icon"><IconCompany size={ICON_MD} /></div>
                       <span style={{ fontWeight: 600 }}>{c.name}</span>
                     </div>
                   </td>
@@ -161,19 +163,19 @@ export default function Companies() {
                   <td><span className="badge badge-neutral">{c.item_count || 0}</span></td>
                   <td>
                     {(c.low_stock_count || 0) > 0
-                      ? <span className="badge badge-warning"><i className="bi bi-exclamation-triangle" /> {c.low_stock_count}</span>
-                      : <span className="badge badge-success"><i className="bi bi-check" /> OK</span>}
+                      ? <span className="badge badge-warning"><IconWarning size={ICON_MD} /> {c.low_stock_count}</span>
+                      : <span className="badge badge-success"><IconCheck size={ICON_MD} /> OK</span>}
                   </td>
-                  <td style={{ fontWeight: 600 }}>${Number(c.stock_value || 0).toFixed(2)}</td>
+                  <td style={{ fontWeight: 600 }}>{formatCurrency(c.stock_value)}</td>
                   <td>
                     <div className="td-actions">
                       <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>
-                        <i className="bi bi-pencil" /> Edit
+                        <IconEdit size={ICON_MD} /> Edit
                       </button>
                       {/* Deleting a tenant is platform-admin only. */}
                       {isAdmin && (
                         <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}>
-                          <i className="bi bi-trash3" />
+                          <IconDelete size={ICON_MD} />
                         </button>
                       )}
                     </div>
@@ -194,7 +196,7 @@ export default function Companies() {
           <>
             <button className="btn btn-secondary" onClick={closeModal}>Cancel</button>
             <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-              {saving ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</> : <><i className="bi bi-check-lg" /> {modal?.mode === 'add' ? 'Create' : 'Save Changes'}</>}
+              {saving ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</> : <><IconCheck size={ICON_MD} /> {modal?.mode === 'add' ? 'Create' : 'Save Changes'}</>}
             </button>
           </>
         }
@@ -219,7 +221,7 @@ export default function Companies() {
         </div>
         {formErr && (
           <div className="login-error">
-            <i className="bi bi-exclamation-circle" /><span>{formErr}</span>
+            <IconAlert size={ICON_MD} /><span>{formErr}</span>
           </div>
         )}
       </Modal>

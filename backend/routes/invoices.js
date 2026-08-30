@@ -6,6 +6,7 @@ const { asyncHandler } = require('../middleware/asyncHandler');
 const { companyScope, resolveCompanyId } = require('../middleware/authorize');
 const { ValidationError, NotFoundError, ConflictError } = require('../lib/errors');
 const v = require('../lib/validate');
+const { formatAmount } = require('../lib/currency');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -293,8 +294,8 @@ router.get('/:id/pdf', asyncHandler(async (req, res) => {
     doc.fontSize(9).font('Helvetica').fillColor('#1e293b')
       .text(item.item_name, colX[0], y, { width: colW[0] })
       .text(item.quantity.toString(), colX[1], y, { width: colW[1], align: 'right' })
-      .text(`$${parseFloat(item.unit_price).toFixed(2)}`, colX[2], y, { width: colW[2], align: 'right' })
-      .text(`$${parseFloat(item.line_total).toFixed(2)}`, colX[3], y, { width: colW[3], align: 'right' });
+      .text(formatAmount(item.unit_price), colX[2], y, { width: colW[2], align: 'right' })
+      .text(formatAmount(item.line_total), colX[3], y, { width: colW[3], align: 'right' });
     y += 20;
   });
 
@@ -305,20 +306,20 @@ router.get('/:id/pdf', asyncHandler(async (req, res) => {
 
   doc.fontSize(9).fillColor('#64748b').font('Helvetica')
     .text('Subtotal:', 350, y, { width: 105, align: 'right' });
-  doc.fillColor('#1e293b').text(`$${parseFloat(invoice.subtotal).toFixed(2)}`, colX[3], y, { width: colW[3], align: 'right' });
+  doc.fillColor('#1e293b').text(formatAmount(invoice.subtotal), colX[3], y, { width: colW[3], align: 'right' });
   y += 16;
 
   if (invoice.tax_rate > 0) {
     const taxAmt = invoice.total - invoice.subtotal;
     doc.fillColor('#64748b').text(`Tax (${invoice.tax_rate}%):`, 350, y, { width: 105, align: 'right' });
-    doc.fillColor('#1e293b').text(`$${taxAmt.toFixed(2)}`, colX[3], y, { width: colW[3], align: 'right' });
+    doc.fillColor('#1e293b').text(formatAmount(taxAmt), colX[3], y, { width: colW[3], align: 'right' });
     y += 16;
   }
 
   doc.rect(350, y - 4, 195, 24).fill('#1e293b');
   doc.fontSize(10).font('Helvetica-Bold').fillColor('#ffffff')
     .text('TOTAL:', 355, y, { width: 100, align: 'right' })
-    .text(`$${parseFloat(invoice.total).toFixed(2)}`, colX[3], y, { width: colW[3], align: 'right' });
+    .text(formatAmount(invoice.total), colX[3], y, { width: colW[3], align: 'right' });
 
   if (invoice.notes) {
     y += 40;

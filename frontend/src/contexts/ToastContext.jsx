@@ -2,14 +2,15 @@ import { createContext, useContext, useState, useCallback, useEffect, useMemo, u
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toastVariants } from '../lib/motion.js';
+import { IconSuccess, IconError, IconWarning, IconInfo, ICON_MD } from '../lib/icons.jsx';
 
 const ToastContext = createContext(null);
 
 const ICONS = {
-  success: 'bi-check-circle-fill',
-  error:   'bi-x-circle-fill',
-  warning: 'bi-exclamation-triangle-fill',
-  info:    'bi-info-circle-fill',
+  success: IconSuccess,
+  error:   IconError,
+  warning: IconWarning,
+  info:    IconInfo,
 };
 
 const TITLES = {
@@ -33,7 +34,7 @@ function ToastItem({ id, type, message, title, onRemove }) {
       // Collapses the gap smoothly as neighbours leave the stack.
       layout
     >
-      <i className={`bi ${ICONS[type]} toast-icon`} />
+      {(() => { const Glyph = ICONS[type]; return <Glyph size={ICON_MD} className="toast-icon" />; })()}
       <div className="toast-content">
         <div className="toast-title">{title || TITLES[type]}</div>
         {message && <div className="toast-msg">{message}</div>}

@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
 import { listContainer, listItem } from '../lib/motion.js';
+import { formatCurrency } from '../lib/format.js';
 import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import { IconSuccess, IconPending, IconAlert, IconClose, IconCompany, IconDelete, IconFinalize, IconInvoice, IconNewInvoice, IconPdf, IconPlus, IconPlusCircle, IconSearch, IconUp, IconView, ICON_MD } from '../lib/icons.jsx';
 
 /* ── New Invoice line-item state helper ─────────────── */
 // quantity and unit_price are held as raw strings while the user types.
@@ -206,11 +208,11 @@ export default function Invoices() {
         </div>
         <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
           <div className="search-wrap">
-            <i className="bi bi-search" />
+            <IconSearch size={ICON_MD} />
             <input placeholder="Search invoices…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <button className="btn btn-primary" onClick={openCreate}>
-            <i className="bi bi-plus-lg" /> New Invoice
+            <IconPlus size={ICON_MD} /> New Invoice
           </button>
         </div>
       </div>
@@ -218,7 +220,7 @@ export default function Invoices() {
       {/* Table */}
       {filtered.length === 0 ? (
         <div className="empty-state">
-          <i className="bi bi-receipt" />
+          <IconInvoice size={ICON_MD} />
           <h3>No invoices yet</h3>
           <p>Create your first invoice using the button above.</p>
         </div>
@@ -240,11 +242,13 @@ export default function Invoices() {
                   <td><span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 500, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{inv.invoice_no}</span></td>
                   <td>{inv.company_name}</td>
                   <td style={{ color: 'var(--text-secondary)' }}>{inv.customer_name}</td>
-                  <td>${parseFloat(inv.subtotal).toFixed(2)}</td>
-                  <td style={{ textAlign: 'right', fontWeight: 700 }}>${parseFloat(inv.total).toFixed(2)}</td>
+                  <td>{formatCurrency(inv.subtotal)}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatCurrency(inv.total)}</td>
                   <td>
                     <span className={`badge ${inv.status === 'finalized' ? 'badge-success' : 'badge-warning'}`}>
-                      <i className={`bi bi-${inv.status === 'finalized' ? 'check-circle' : 'clock'}`} />
+                      {inv.status === 'finalized'
+                        ? <IconSuccess size={12} />
+                        : <IconPending size={12} />}
                       {inv.status}
                     </span>
                   </td>
@@ -253,19 +257,19 @@ export default function Invoices() {
                   </td>
                   <td>
                     <div className="td-actions">
-                      <button className="btn btn-secondary btn-sm" onClick={() => openView(inv.id)}><i className="bi bi-eye" /></button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openView(inv.id)}><IconView size={ICON_MD} /></button>
                       {inv.status === 'draft' ? (
                         <>
                           <button className="btn btn-success btn-sm" onClick={() => setFinalizeConfirm({ id: inv.id, no: inv.invoice_no })}>
-                            <i className="bi bi-check2-all" /> Finalize
+                            <IconFinalize size={ICON_MD} /> Finalize
                           </button>
                           <button className="btn btn-danger btn-sm" onClick={() => setDeleteConfirm({ id: inv.id, no: inv.invoice_no })}>
-                            <i className="bi bi-trash3" />
+                            <IconDelete size={ICON_MD} />
                           </button>
                         </>
                       ) : (
                         <a href={api.pdfUrl(inv.id)} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">
-                          <i className="bi bi-file-earmark-pdf" /> PDF
+                          <IconPdf size={ICON_MD} /> PDF
                         </a>
                       )}
                     </div>
@@ -283,7 +287,7 @@ export default function Invoices() {
           <>
             <button className="btn btn-secondary" onClick={() => setCreateOpen(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={handleCreate} disabled={creating}>
-              {creating ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Creating…</> : <><i className="bi bi-file-earmark-plus" /> Create Draft</>}
+              {creating ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Creating…</> : <><IconNewInvoice size={ICON_MD} /> Create Draft</>}
             </button>
           </>
         }
@@ -303,7 +307,7 @@ export default function Invoices() {
                 padding: '9px 12px', background: 'var(--bg-input)', borderRadius: 8,
                 fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
               }}>
-                <i className="bi bi-building" style={{ color: 'var(--text-muted)' }} />
+                <IconCompany size={ICON_MD} style={{ color: 'var(--text-muted)' }} />
                 {companies[0]?.name ?? '—'}
               </div>
             )}
@@ -334,7 +338,7 @@ export default function Invoices() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <label style={{ margin: 0, fontWeight: 700, color: 'var(--text-primary)', fontSize: 13 }}>Line Items</label>
               <button className="btn btn-secondary btn-sm" type="button" onClick={addLine}>
-                <i className="bi bi-plus-lg" /> Add Item
+                <IconPlus size={ICON_MD} /> Add Item
               </button>
             </div>
 
@@ -344,7 +348,7 @@ export default function Invoices() {
                 <tbody>
                   {lines.length === 0 ? (
                     <tr><td colSpan={5} style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: 13 }}>
-                      <i className="bi bi-plus-circle" style={{ marginRight: 8 }} />Click "Add Item" to add line items
+                      <IconPlusCircle size={ICON_MD} style={{ marginRight: 8 }} />Click "Add Item" to add line items
                     </td></tr>
                   ) : lines.map((line, idx) => (
                     <tr key={idx}>
@@ -367,11 +371,11 @@ export default function Invoices() {
                           onChange={e => updateLine(idx, { unit_price: e.target.value })} />
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                        ${(toNum(line.quantity) * toNum(line.unit_price)).toFixed(2)}
+                        {formatCurrency(toNum(line.quantity) * toNum(line.unit_price))}
                       </td>
                       <td style={{ width: 40 }}>
                         <button className="btn btn-danger btn-icon btn-sm" onClick={() => removeLine(idx)}>
-                          <i className="bi bi-x-lg" />
+                          <IconClose size={ICON_MD} />
                         </button>
                       </td>
                     </tr>
@@ -384,29 +388,29 @@ export default function Invoices() {
             {lines.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
                 <div style={{ display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-secondary)' }}>
-                  <span>Subtotal</span><strong style={{ color: 'var(--text-primary)' }}>${subtotal.toFixed(2)}</strong>
+                  <span>Subtotal</span><strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(subtotal)}</strong>
                 </div>
                 {taxRate > 0 && (
                   <div style={{ display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-secondary)' }}>
-                    <span>Tax ({taxRate}%)</span><strong style={{ color: 'var(--text-primary)' }}>${tax.toFixed(2)}</strong>
+                    <span>Tax ({taxRate}%)</span><strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(tax)}</strong>
                   </div>
                 )}
                 <div style={{ display: 'flex', gap: 24, padding: '10px 16px', background: 'var(--accent-grad)', color: '#fff', borderRadius: 8, fontSize: 15, fontWeight: 700 }}>
-                  <span>Total</span><span>${total.toFixed(2)}</span>
+                  <span>Total</span><span>{formatCurrency(total)}</span>
                 </div>
               </div>
             )}
           </>
         ) : (
           <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontSize: 13 }}>
-            <i className="bi bi-arrow-up-circle" style={{ fontSize: 24, display: 'block', marginBottom: 8, opacity: .4 }} />
+            <IconUp size={ICON_MD} style={{ fontSize: 24, display: 'block', marginBottom: 8, opacity: .4 }} />
             Select a company above to load available items
           </div>
         )}
 
         {createErr && (
           <div className="login-error" style={{ marginTop: 12 }}>
-            <i className="bi bi-exclamation-circle" /><span>{createErr}</span>
+            <IconAlert size={ICON_MD} /><span>{createErr}</span>
           </div>
         )}
       </Modal>
@@ -418,7 +422,7 @@ export default function Invoices() {
             <>
               <button className="btn btn-secondary" onClick={() => setViewInv(null)}>Close</button>
               <a href={api.pdfUrl(viewInv.id)} target="_blank" rel="noreferrer" className="btn btn-primary">
-                <i className="bi bi-file-earmark-pdf" /> Download PDF
+                <IconPdf size={ICON_MD} /> Download PDF
               </a>
             </>
           }
@@ -452,8 +456,8 @@ export default function Invoices() {
                   <tr key={li.id}>
                     <td>{li.item_name}</td>
                     <td>{li.quantity}</td>
-                    <td>${parseFloat(li.unit_price).toFixed(2)}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600 }}>${parseFloat(li.line_total).toFixed(2)}</td>
+                    <td>{formatCurrency(li.unit_price)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatCurrency(li.line_total)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -462,15 +466,15 @@ export default function Invoices() {
 
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
             <div style={{ display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-secondary)' }}>
-              <span>Subtotal</span><strong style={{ color: 'var(--text-primary)' }}>${parseFloat(viewInv.subtotal).toFixed(2)}</strong>
+              <span>Subtotal</span><strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(viewInv.subtotal)}</strong>
             </div>
             {viewInv.tax_rate > 0 && (
               <div style={{ display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-secondary)' }}>
-                <span>Tax ({viewInv.tax_rate}%)</span><strong style={{ color: 'var(--text-primary)' }}>${(viewInv.total - viewInv.subtotal).toFixed(2)}</strong>
+                <span>Tax ({viewInv.tax_rate}%)</span><strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(viewInv.total - viewInv.subtotal)}</strong>
               </div>
             )}
             <div style={{ display: 'flex', gap: 24, padding: '10px 16px', background: 'var(--accent-grad)', color: '#fff', borderRadius: 8, fontSize: 15, fontWeight: 700 }}>
-              <span>Total</span><span>${parseFloat(viewInv.total).toFixed(2)}</span>
+              <span>Total</span><span>{formatCurrency(viewInv.total)}</span>
             </div>
           </div>
           {viewInv.notes && (

@@ -6,6 +6,7 @@ import { useToast } from '../contexts/ToastContext.jsx';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconSearch, IconShield, IconUserPlus, IconUsers, ICON_MD } from '../lib/icons.jsx';
 
 const EMPTY_FORM = { username: '', password: '', role: 'company_admin', company_id: '' };
 
@@ -130,18 +131,18 @@ export default function Users() {
         </div>
         <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
           <div className="search-wrap">
-            <i className="bi bi-search" />
+            <IconSearch size={ICON_MD} />
             <input placeholder="Search accounts…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <button className="btn btn-primary" onClick={openAdd}>
-            <i className="bi bi-person-plus" /> Add Account
+            <IconUserPlus size={ICON_MD} /> Add Account
           </button>
         </div>
       </div>
 
       {filtered.length === 0 ? (
         <div className="empty-state">
-          <i className="bi bi-people" />
+          <IconUsers size={ICON_MD} />
           <h3>No accounts found</h3>
           <p>Create an account using the button above.</p>
         </div>
@@ -170,8 +171,8 @@ export default function Users() {
                     </td>
                     <td>
                       {u.role === 'admin'
-                        ? <span className="badge badge-success"><i className="bi bi-shield-check" /> Platform Admin</span>
-                        : <span className="badge badge-neutral"><i className="bi bi-building" /> Company Admin</span>}
+                        ? <span className="badge badge-success"><IconShield size={ICON_MD} /> Platform Admin</span>
+                        : <span className="badge badge-neutral"><IconCompany size={ICON_MD} /> Company Admin</span>}
                     </td>
                     <td style={{ color: 'var(--text-secondary)' }}>
                       {u.company_name || '—'}
@@ -182,7 +183,7 @@ export default function Users() {
                     <td>
                       <div className="td-actions">
                         <button className="btn btn-secondary btn-sm" onClick={() => openEdit(u)}>
-                          <i className="bi bi-pencil" /> Edit
+                          <IconEdit size={ICON_MD} /> Edit
                         </button>
                         {/* Deleting your own account is refused by the API; do
                             not offer a button that cannot succeed. */}
@@ -191,7 +192,7 @@ export default function Users() {
                             className="btn btn-danger btn-sm"
                             onClick={() => setConfirm({ id: u.id, username: u.username })}
                           >
-                            <i className="bi bi-trash3" />
+                            <IconDelete size={ICON_MD} />
                           </button>
                         )}
                       </div>
@@ -215,7 +216,7 @@ export default function Users() {
             <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
               {saving
                 ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</>
-                : <><i className="bi bi-check-lg" /> {modal?.mode === 'add' ? 'Create' : 'Save Changes'}</>}
+                : <><IconCheck size={ICON_MD} /> {modal?.mode === 'add' ? 'Create' : 'Save Changes'}</>}
             </button>
           </>
         }
@@ -265,7 +266,7 @@ export default function Users() {
 
         {formErr && (
           <div className="login-error">
-            <i className="bi bi-exclamation-circle" /><span>{formErr}</span>
+            <IconAlert size={ICON_MD} /><span>{formErr}</span>
           </div>
         )}
       </Modal>
