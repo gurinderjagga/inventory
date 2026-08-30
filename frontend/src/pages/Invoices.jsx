@@ -220,7 +220,7 @@ export default function Invoices() {
       {/* Table */}
       {filtered.length === 0 ? (
         <div className="empty-state">
-          <IconInvoice size={ICON_MD} />
+          <IconInvoice />
           <h3>No invoices yet</h3>
           <p>Create your first invoice using the button above.</p>
         </div>
@@ -230,7 +230,7 @@ export default function Invoices() {
             <thead>
               <tr>
                 <th>Invoice #</th><th>Company</th><th>Customer</th>
-                <th>Subtotal</th><th style={{ textAlign: 'right' }}>Total</th>
+                <th className="num">Subtotal</th><th className="num">Total</th>
                 <th>Status</th><th>Date</th><th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
@@ -239,21 +239,18 @@ export default function Invoices() {
                 <motion.tr key={inv.id} variants={listItem}>
                   {/* nowrap: an invoice number split across two lines is
                       unreadable as an identifier */}
-                  <td><span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 500, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{inv.invoice_no}</span></td>
-                  <td>{inv.company_name}</td>
-                  <td style={{ color: 'var(--text-secondary)' }}>{inv.customer_name}</td>
-                  <td>{formatCurrency(inv.subtotal)}</td>
-                  <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatCurrency(inv.total)}</td>
+                  <td className="code">{inv.invoice_no}</td>
+                  <td className="cell-primary">{inv.company_name}</td>
+                  <td className="cell-muted">{inv.customer_name}</td>
+                  <td className="num">{formatCurrency(inv.subtotal)}</td>
+                  <td className="num num-strong">{formatCurrency(inv.total)}</td>
                   <td>
                     <span className={`badge ${inv.status === 'finalized' ? 'badge-success' : 'badge-warning'}`}>
-                      {inv.status === 'finalized'
-                        ? <IconSuccess size={12} />
-                        : <IconPending size={12} />}
                       {inv.status}
                     </span>
                   </td>
-                  <td style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                    {new Date(inv.created_at).toLocaleDateString()}
+                  <td className="cell-muted" style={{ whiteSpace: 'nowrap' }}>
+                    {new Date(inv.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                   </td>
                   <td>
                     <div className="td-actions">
@@ -344,7 +341,7 @@ export default function Invoices() {
 
             <div className="table-wrapper" style={{ marginBottom: 16 }}>
               <table>
-                <thead><tr><th>Item</th><th>Qty</th><th>Unit Price</th><th style={{ textAlign: 'right' }}>Total</th><th /></tr></thead>
+                <thead><tr><th>Item</th><th className="num">Qty</th><th className="num">Unit Price</th><th className="num">Total</th><th /></tr></thead>
                 <tbody>
                   {lines.length === 0 ? (
                     <tr><td colSpan={5} style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: 13 }}>
@@ -370,7 +367,7 @@ export default function Invoices() {
                         <input type="number" min="0" step="0.01" value={line.unit_price}
                           onChange={e => updateLine(idx, { unit_price: e.target.value })} />
                       </td>
-                      <td style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      <td className="num num-strong">
                         {formatCurrency(toNum(line.quantity) * toNum(line.unit_price))}
                       </td>
                       <td style={{ width: 40 }}>
@@ -386,18 +383,12 @@ export default function Invoices() {
 
             {/* Totals */}
             {lines.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-                <div style={{ display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-secondary)' }}>
-                  <span>Subtotal</span><strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(subtotal)}</strong>
-                </div>
+              <div className="totals">
+                <div className="totals-row"><span>Subtotal</span><span className="totals-val">{formatCurrency(subtotal)}</span></div>
                 {taxRate > 0 && (
-                  <div style={{ display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-secondary)' }}>
-                    <span>Tax ({taxRate}%)</span><strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(tax)}</strong>
-                  </div>
+                  <div className="totals-row"><span>Tax ({taxRate}%)</span><span className="totals-val">{formatCurrency(tax)}</span></div>
                 )}
-                <div style={{ display: 'flex', gap: 24, padding: '10px 16px', background: 'var(--accent-grad)', color: '#fff', borderRadius: 8, fontSize: 15, fontWeight: 700 }}>
-                  <span>Total</span><span>{formatCurrency(total)}</span>
-                </div>
+                <div className="totals-row grand"><span>Total</span><span className="totals-val">{formatCurrency(total)}</span></div>
               </div>
             )}
           </>
@@ -440,42 +431,37 @@ export default function Invoices() {
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>DATE</div>
-              <div style={{ fontWeight: 600 }}>{new Date(viewInv.created_at).toLocaleDateString()}</div>
+              <div style={{ fontWeight: 600 }}>{new Date(viewInv.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>STATUS</div>
-              <span className={`badge ${viewInv.status === 'finalized' ? 'badge-success' : 'badge-warning'}`}>{viewInv.status}</span>
+              <span className={`badge ${viewInv.status === 'finalized' ? 'badge-success' : 'badge-warning'}`}
+                    style={{ textTransform: 'capitalize' }}>{viewInv.status}</span>
             </div>
           </div>
 
           <div className="table-wrapper" style={{ marginBottom: 16 }}>
             <table>
-              <thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th style={{ textAlign: 'right' }}>Total</th></tr></thead>
+              <thead><tr><th>Description</th><th className="num">Qty</th><th className="num">Unit Price</th><th className="num">Total</th></tr></thead>
               <tbody>
                 {viewInv.line_items.map(li => (
                   <tr key={li.id}>
-                    <td>{li.item_name}</td>
-                    <td>{li.quantity}</td>
-                    <td>{formatCurrency(li.unit_price)}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatCurrency(li.line_total)}</td>
+                    <td className="cell-primary">{li.item_name}</td>
+                    <td className="num">{li.quantity}</td>
+                    <td className="num">{formatCurrency(li.unit_price)}</td>
+                    <td className="num num-strong">{formatCurrency(li.line_total)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-            <div style={{ display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-secondary)' }}>
-              <span>Subtotal</span><strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(viewInv.subtotal)}</strong>
-            </div>
+          <div className="totals">
+            <div className="totals-row"><span>Subtotal</span><span className="totals-val">{formatCurrency(viewInv.subtotal)}</span></div>
             {viewInv.tax_rate > 0 && (
-              <div style={{ display: 'flex', gap: 24, fontSize: 13, color: 'var(--text-secondary)' }}>
-                <span>Tax ({viewInv.tax_rate}%)</span><strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(viewInv.total - viewInv.subtotal)}</strong>
-              </div>
+              <div className="totals-row"><span>Tax ({viewInv.tax_rate}%)</span><span className="totals-val">{formatCurrency(viewInv.total - viewInv.subtotal)}</span></div>
             )}
-            <div style={{ display: 'flex', gap: 24, padding: '10px 16px', background: 'var(--accent-grad)', color: '#fff', borderRadius: 8, fontSize: 15, fontWeight: 700 }}>
-              <span>Total</span><span>{formatCurrency(viewInv.total)}</span>
-            </div>
+            <div className="totals-row grand"><span>Total</span><span className="totals-val">{formatCurrency(viewInv.total)}</span></div>
           </div>
           {viewInv.notes && (
             <div style={{ marginTop: 16, padding: '12px 14px', background: 'var(--bg-input)', borderRadius: 8, fontSize: 13, color: 'var(--text-secondary)' }}>

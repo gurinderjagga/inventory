@@ -148,7 +148,7 @@ export default function Stock() {
         </div>
         {companies.length === 0 ? (
           <div className="empty-state">
-            <IconCompany size={ICON_MD} />
+            <IconCompany />
             <h3>No companies yet</h3>
             <p>Add companies from the Companies page first.</p>
           </div>
@@ -165,7 +165,7 @@ export default function Stock() {
                   <div className="company-card-meta">{c.email || ''}{c.phone ? ' · ' + c.phone : ''}</div>
                   <div className="company-card-stats">
                     <div className="company-card-stat">
-                      <span className="val" style={{ color: 'var(--text-accent)' }}>{c.item_count || 0}</span>
+                      <span className="val">{c.item_count || 0}</span>
                       <span className="lbl">Items</span>
                     </div>
                     <div className="company-card-stat">
@@ -173,11 +173,11 @@ export default function Stock() {
                       <span className="lbl">Low Stock</span>
                     </div>
                     <div className="company-card-stat">
-                      <span className="val" style={{ color: 'var(--success)', fontSize: 14 }}>{formatCurrencyShort(c.stock_value)}</span>
+                      <span className="val" style={{ fontSize: 13 }}>{formatCurrencyShort(c.stock_value)}</span>
                       <span className="lbl">Value</span>
                     </div>
                   </div>
-                  {low > 0 && <div style={{ marginTop: 12 }}><span className="badge badge-warning"><IconWarning size={ICON_MD} /> {low} items low</span></div>}
+                  {low > 0 && <div style={{ marginTop: 10 }}><span className="badge badge-warning">{low} low</span></div>}
                 </motion.div>
               );
             })}
@@ -232,7 +232,7 @@ export default function Stock() {
         <div className="loading-page"><div className="spinner" /></div>
       ) : filteredItems.length === 0 ? (
         <div className="empty-state">
-          <IconStock size={ICON_MD} />
+          <IconStock />
           <h3>No items found</h3>
           <p>Add your first stock item using the button above.</p>
         </div>
@@ -242,7 +242,7 @@ export default function Stock() {
             <thead>
               <tr>
                 <th>Item Name</th><th>SKU</th><th>Unit</th>
-                <th>Stock Level</th><th>Unit Price</th><th>Stock Value</th>
+                <th className="num">On Hand</th><th className="num">Unit Price</th><th className="num">Stock Value</th>
                 <th>Status</th><th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
@@ -254,12 +254,12 @@ export default function Stock() {
                 const barClr = isLow ? 'var(--warning)' : item.quantity > item.low_stock_threshold * 2 ? 'var(--success)' : 'var(--info)';
                 return (
                   <motion.tr key={item.id} variants={listItem}>
-                    <td style={{ fontWeight: 600 }}>{item.name}</td>
-                    <td style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 500, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{item.sku || '—'}</td>
-                    <td>{item.unit}</td>
-                    <td>
+                    <td className="cell-primary">{item.name}</td>
+                    <td className="code">{item.sku || '—'}</td>
+                    <td className="cell-muted">{item.unit}</td>
+                    <td className="num">
                       <div className="stock-bar-wrap">
-                        <span style={{ fontWeight: 600, minWidth: 32 }}>{item.quantity}</span>
+                        <span className="num num-strong">{item.quantity}</span>
                         <div className="stock-bar">
                           <motion.div
                             className="stock-bar-fill"
@@ -271,12 +271,12 @@ export default function Stock() {
                         </div>
                       </div>
                     </td>
-                    <td>{formatCurrency(item.unit_price)}</td>
-                    <td style={{ fontWeight: 600, color: 'var(--success)' }}>{formatCurrency(item.quantity * item.unit_price)}</td>
+                    <td className="num">{formatCurrency(item.unit_price)}</td>
+                    <td className="num num-strong">{formatCurrency(item.quantity * item.unit_price)}</td>
                     <td>
                       {isLow
-                        ? <span className="badge badge-warning"><IconWarning size={ICON_MD} /> Low</span>
-                        : <span className="badge badge-success"><IconSuccess size={ICON_MD} /> OK</span>}
+                        ? <span className="badge badge-warning">Low</span>
+                        : <span className="badge badge-success">In stock</span>}
                     </td>
                     <td>
                       <div className="td-actions">

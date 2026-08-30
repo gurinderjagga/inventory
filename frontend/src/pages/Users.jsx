@@ -142,7 +142,7 @@ export default function Users() {
 
       {filtered.length === 0 ? (
         <div className="empty-state">
-          <IconUsers size={ICON_MD} />
+          <IconUsers />
           <h3>No accounts found</h3>
           <p>Create an account using the button above.</p>
         </div>
@@ -165,20 +165,18 @@ export default function Users() {
                         <div className="user-avatar" style={{ width: 28, height: 28, fontSize: 12 }}>
                           {u.username[0]?.toUpperCase()}
                         </div>
-                        <span style={{ fontWeight: 600 }}>{u.username}</span>
+                        <span className="cell-primary">{u.username}</span>
                         {isSelf && <span className="badge badge-neutral">you</span>}
                       </div>
                     </td>
                     <td>
                       {u.role === 'admin'
-                        ? <span className="badge badge-success"><IconShield size={ICON_MD} /> Platform Admin</span>
-                        : <span className="badge badge-neutral"><IconCompany size={ICON_MD} /> Company Admin</span>}
+                        ? <span className="badge badge-info badge-nodot"><IconShield size={13} /> Platform Admin</span>
+                        : <span className="badge badge-neutral"><IconCompany size={13} /> Company Admin</span>}
                     </td>
-                    <td style={{ color: 'var(--text-secondary)' }}>
-                      {u.company_name || '—'}
-                    </td>
-                    <td style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                      {new Date(u.created_at).toLocaleDateString()}
+                    <td className="cell-muted">{u.company_name || '—'}</td>
+                    <td className="cell-muted" style={{ whiteSpace: 'nowrap' }}>
+                      {new Date(u.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>
                     <td>
                       <div className="td-actions">

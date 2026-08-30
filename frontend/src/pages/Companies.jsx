@@ -131,7 +131,7 @@ export default function Companies() {
       {/* Table */}
       {filtered.length === 0 ? (
         <div className="empty-state">
-          <IconCompany size={ICON_MD} />
+          <IconCompany />
           <h3>No companies found</h3>
           <p>Add your first company using the button above.</p>
         </div>
@@ -145,7 +145,7 @@ export default function Companies() {
                 <th>Phone</th>
                 <th>Items</th>
                 <th>Low Stock</th>
-                <th>Stock Value</th>
+                <th className="num">Stock Value</th>
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
@@ -153,20 +153,20 @@ export default function Companies() {
               {filtered.map(c => (
                 <motion.tr key={c.id} variants={listItem}>
                   <td>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                       <div className="company-avatar-icon"><IconCompany size={ICON_MD} /></div>
-                      <span style={{ fontWeight: 600 }}>{c.name}</span>
+                      <span className="cell-primary">{c.name}</span>
                     </div>
                   </td>
-                  <td style={{ color: 'var(--text-secondary)' }}>{c.email || '—'}</td>
-                  <td style={{ color: 'var(--text-secondary)' }}>{c.phone || '—'}</td>
+                  <td className="cell-muted">{c.email || '—'}</td>
+                  <td className="cell-muted">{c.phone || '—'}</td>
                   <td><span className="badge badge-neutral">{c.item_count || 0}</span></td>
                   <td>
                     {(c.low_stock_count || 0) > 0
-                      ? <span className="badge badge-warning"><IconWarning size={ICON_MD} /> {c.low_stock_count}</span>
-                      : <span className="badge badge-success"><IconCheck size={ICON_MD} /> OK</span>}
+                      ? <span className="badge badge-warning">{c.low_stock_count} low</span>
+                      : <span className="badge badge-success">OK</span>}
                   </td>
-                  <td style={{ fontWeight: 600 }}>{formatCurrency(c.stock_value)}</td>
+                  <td className="num num-strong">{formatCurrency(c.stock_value)}</td>
                   <td>
                     <div className="td-actions">
                       <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>

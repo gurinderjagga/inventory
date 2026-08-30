@@ -64,6 +64,6 @@ export const IconPending  = Clock;
  * Default sizing. Lucide defaults to 24px, which is oversized next to 13.5px
  * body text; 16 sits correctly on a line of text and 14 inside small buttons.
  */
-export const ICON_SM = 14;
-export const ICON_MD = 16;
-export const ICON_LG = 20;
+export const ICON_SM = 13;
+export const ICON_MD = 15;
+export const ICON_LG = 18;

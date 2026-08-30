@@ -76,7 +76,7 @@ export default function Dashboard() {
 
   if (error) return (
     <div className="db-empty" style={{ height: 300 }}>
-      <IconAlert size={ICON_MD} style={{ fontSize: 36, opacity: .25, marginBottom: 12 }} />
+      <IconAlert />
       <p>{error}</p>
     </div>
   );
@@ -121,7 +121,7 @@ export default function Dashboard() {
 
           {recent.length === 0 ? (
             <div className="db-empty">
-              <IconInvoice size={ICON_MD} style={{ fontSize: 32, opacity: .2, marginBottom: 10 }} />
+              <IconInvoice />
               <p>No invoices yet — create one from the Invoices page.</p>
             </div>
           ) : (
@@ -132,7 +132,7 @@ export default function Dashboard() {
                     <th>Invoice</th>
                     <th>Company</th>
                     <th>Customer</th>
-                    <th style={{ textAlign: 'right' }}>Amount</th>
+                    <th className="num">Amount</th>
                     <th>Status</th>
                     <th>Date</th>
                   </tr>
@@ -143,14 +143,11 @@ export default function Dashboard() {
                       <td className="db-mono">{inv.invoice_no}</td>
                       <td className="db-company-cell">{inv.company_name}</td>
                       <td className="db-secondary">{inv.customer_name}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600, letterSpacing: '-.3px' }}>
+                      <td className="num num-strong">
                         {formatCurrency(inv.total)}
                       </td>
                       <td>
                         <span className={`db-status db-status-${inv.status}`}>
-                          {inv.status === 'finalized'
-                            ? <IconSuccess size={12} />
-                            : <IconPending size={12} />}
                           {inv.status}
                         </span>
                       </td>
