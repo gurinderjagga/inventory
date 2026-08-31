@@ -361,10 +361,9 @@ export default function Stock() {
           <table>
             <thead>
               <tr>
+                <SortableTh sortKey="sku"         sort={sort} onToggle={toggle}>Part Code</SortableTh>
                 <SortableTh sortKey="name"        sort={sort} onToggle={toggle}>Item Name</SortableTh>
-                <SortableTh sortKey="sku"         sort={sort} onToggle={toggle}>SKU</SortableTh>
-                <SortableTh sortKey="unit"        sort={sort} onToggle={toggle}>Unit</SortableTh>
-                <SortableTh sortKey="quantity"    sort={sort} onToggle={toggle} align="num">On Hand</SortableTh>
+                <SortableTh sortKey="quantity"    sort={sort} onToggle={toggle} align="num">Quantity</SortableTh>
                 <SortableTh sortKey="unit_price"  sort={sort} onToggle={toggle} align="num">Unit Price</SortableTh>
                 <SortableTh sortKey="stock_value" sort={sort} onToggle={toggle} align="num">Stock Value</SortableTh>
                 <SortableTh sortKey="status"      sort={sort} onToggle={toggle}>Status</SortableTh>
@@ -391,24 +390,17 @@ export default function Stock() {
                 const barClr = isLow ? 'var(--warning)' : qty > thresh * 2 ? 'var(--success)' : 'var(--info)';
                 return (
                   <motion.tr key={item.id} variants={listItem}>
-                    <td className="cell-primary">{item.name}</td>
                     <td className="code">{item.sku || '—'}</td>
-                    <td className="cell-muted">{item.unit}</td>
+                    <td className="cell-primary">{item.name}</td>
+                    <td className="num num-strong">{item.quantity}</td>
                     <td className="num">
-                      <div className="stock-bar-wrap">
-                        <span className="num num-strong">{item.quantity}</span>
-                        <div className="stock-bar">
-                          <motion.div
-                            className="stock-bar-fill"
-                            style={{ background: barClr }}
-                            initial={{ width: 0 }}
-                            animate={{ width: `${pct}%` }}
-                            transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
-                          />
+                      {formatCurrency(item.unit_price)}
+                      {Number(item.gst_rate) > 0 && (
+                        <div className="cell-muted" style={{ fontSize: 11, marginTop: 2 }}>
+                          {formatCurrency(item.unit_price * (1 + item.gst_rate / 100))} w/ {item.gst_rate}% GST
                         </div>
-                      </div>
+                      )}
                     </td>
-                    <td className="num">{formatCurrency(item.unit_price)}</td>
                     <td className="num num-strong">{formatCurrency(item.quantity * item.unit_price)}</td>
                     <td>
                       {isLow
@@ -454,16 +446,11 @@ export default function Stock() {
           </>
         }
       >
+        <div className="form-group"><label>Part Code</label>
+          <input type="text" placeholder="e.g. TC-001" {...field('sku')} />
+        </div>
         <div className="form-group"><label>Item Name <span style={{ color: 'var(--danger)' }}>*</span></label>
           <input type="text" placeholder="e.g. HDMI Cable" {...field('name')} autoFocus />
-        </div>
-        <div className="form-row">
-          <div className="form-group"><label>SKU / Code</label>
-            <input type="text" placeholder="e.g. TC-001" {...field('sku')} />
-          </div>
-          <div className="form-group"><label>Unit</label>
-            <select {...field('unit')}>{UNITS.map(u => <option key={u} value={u}>{u}</option>)}</select>
-          </div>
         </div>
         <div className="form-row">
           <div className="form-group">
@@ -477,11 +464,7 @@ export default function Stock() {
               <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
                 Use the Adjust Stock action to change quantity.
               </small>
-            ) : isDiscrete && (
-              <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
-                Whole {form.unit} only.
-              </small>
-            )}
+            ) : null}
           </div>
           <div className="form-group"><label>Unit Price (₹) <span style={{ color: 'var(--danger)' }}>*</span></label>
             <input type="number" min="0" step="0.01" placeholder="0.00" {...field('unit_price')} />
@@ -541,7 +524,7 @@ export default function Stock() {
                    value={adjust.quantity}
                    onChange={e => setAdjust(a => ({ ...a, quantity: e.target.value }))} />
             <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
-              Currently {adjust.item.quantity} {adjust.item.unit}
+              Currently {adjust.item.quantity}
             </small>
           </div>
           <div className="form-group">

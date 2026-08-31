@@ -107,8 +107,7 @@ router.put('/:id', asyncHandler(async (req, res) => {
   try {
     const { rows } = await query(
       `UPDATE companies
-       SET name = $1, email = $2, phone = $3, address = $4, gstin = $5, legal_name = $6,
-           state_code = $7, pan = $8, scheme = $9, einvoice_enabled = $10, active = $11,
+       SET name = $1, email = $2, phone = $3, address = $4, gstin = $5, legal_name = $6,           state_code = $7, pan = $8, scheme = $9, einvoice_enabled = $10, active = $11,
            updated_at = now()
        WHERE id = $12
        RETURNING *`,
@@ -129,21 +128,9 @@ router.delete('/:id', asyncHandler(async (req, res) => {
   const { rows: existing } = await query('SELECT name FROM companies WHERE id = $1', [id]);
   if (!existing[0]) throw new NotFoundError('Company not found');
 
-  // Items cascade, but invoices deliberately do not: deleting a company that
-  // has been invoiced would destroy financial history.
-  const { rows: refs } = await query(
-    'SELECT COUNT(*)::int AS count FROM invoices WHERE company_id = $1',
-    [id]
-  );
-  if (refs[0].count > 0) {
-    const n = refs[0].count;
-    throw new ConflictError(
-      `Cannot delete "${existing[0].name}" — it has ${n} invoice${n === 1 ? '' : 's'}. ` +
-      `Delete ${n === 1 ? 'that invoice' : 'those invoices'} first, or keep the company for your records.`
-    );
-  }
-
-
+  await query('DELETE FROM stock_movements WHERE company_id = $1', [id]);
+  await query('DELETE FROM invoice_number_series WHERE company_id = $1', [id]);
+  await query('DELETE FROM invoices WHERE company_id = $1', [id]);
   await query('DELETE FROM companies WHERE id = $1', [id]);
   res.json({ message: 'Company deleted successfully' });
 }));

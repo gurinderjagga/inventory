@@ -11,7 +11,7 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const EMPTY_LINE = () => ({ id: Math.random(), itemId: '', newItemName: '', quantity: '', price: '', gstRate: '', note: '' });
+const EMPTY_LINE = () => ({ id: Math.random(), itemId: '', newItemName: '', partCode: '', quantity: '', price: '', gstRate: '', note: '' });
 
 function reasonLabel(reason) {
   const map = {
@@ -50,7 +50,7 @@ function ItemCombobox({ items, value, newItemName, onSelect, onNewItem, disabled
   // Display value: if an existing item is selected show its name, else show the new-item name
   const selectedItem = items.find(i => String(i.id) === String(value));
   const displayText  = open || focused ? query
-    : selectedItem ? `${selectedItem.name}${selectedItem.sku ? ` (${selectedItem.sku})` : ''}`
+    : selectedItem ? `${selectedItem.name}`
     : newItemName  ? `★ ${newItemName} (new)`
     : '';
 
@@ -59,7 +59,7 @@ function ItemCombobox({ items, value, newItemName, onSelect, onNewItem, disabled
     setFocused(true);
     setOpen(true);
     setQuery(selectedItem
-      ? `${selectedItem.name}${selectedItem.sku ? ` (${selectedItem.sku})` : ''}`
+      ? `${selectedItem.name}`
       : newItemName || '');
   };
 
@@ -222,6 +222,7 @@ function TransactionForm({ mode, companies }) {
       ...l, 
       itemId, 
       newItemName,
+      partCode: item && item.sku ? item.sku : '',
       price: item && item.unit_price ? item.unit_price : '',
       gstRate: item && item.gst_rate ? item.gst_rate : ''
     } : l));
@@ -258,6 +259,7 @@ function TransactionForm({ mode, companies }) {
           const created = await api.createItem({
             company_id: Number(companyId),
             name:       line.newItemName.trim(),
+            sku:        line.partCode.trim() || null,
             quantity:   0,   // stock gets added via the movement below
             unit_price: parseFloat(line.price) || 0,
             gst_rate:   parseFloat(line.gstRate) || 0,
@@ -327,10 +329,10 @@ function TransactionForm({ mode, companies }) {
       <div className={`txn-lines-wrap ${isIn ? 'txn-lines-in' : 'txn-lines-out'}`}>
         <div className="txn-lines-header">
           <span className="txn-col-item">Item — {isIn ? 'search or type new name' : 'search items'}</span>
+          <span className="txn-col-part">Part Code</span>
           <span className="txn-col-qty">Quantity</span>
           {isIn && <span className="txn-col-price">Price (₹)</span>}
           {isIn && <span className="txn-col-gst">GST (%)</span>}
-          <span className="txn-col-note">Note (optional)</span>
           <span className="txn-col-del" />
         </div>
 
@@ -361,6 +363,19 @@ function TransactionForm({ mode, companies }) {
                   />
                 </div>
 
+                {/* Part Code */}
+                <div className="txn-col-part">
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder={!isIn || item ? "—" : "e.g. TC-001"}
+                    value={line.partCode}
+                    onChange={e => updateLine(line.id, 'partCode', e.target.value)}
+                    disabled={submitting || (item && true) || (!isIn)}
+                    title={item ? "Part code is bound to the item" : ""}
+                  />
+                </div>
+
                 {/* Quantity */}
                 <div className="txn-col-qty">
                   <input
@@ -374,7 +389,6 @@ function TransactionForm({ mode, companies }) {
                     disabled={submitting}
                     aria-label={`Quantity for line ${idx + 1}`}
                   />
-                  {item && <span className="txn-unit-label">{item.unit}</span>}
                 </div>
 
                 {/* Price and GST (Stock In only) */}
@@ -402,18 +416,7 @@ function TransactionForm({ mode, companies }) {
                   </>
                 )}
 
-                {/* Note */}
-                <div className="txn-col-note">
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder={isIn ? 'e.g. from supplier' : 'e.g. issued to workshop'}
-                    value={line.note}
-                    onChange={e => updateLine(line.id, 'note', e.target.value)}
-                    disabled={submitting}
-                    aria-label={`Note for line ${idx + 1}`}
-                  />
-                </div>
+
 
                 {/* Remove */}
                 <div className="txn-col-del">

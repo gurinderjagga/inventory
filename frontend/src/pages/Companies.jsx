@@ -10,7 +10,7 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
 import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
-import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconWarning, IconArchive, ICON_MD } from '../lib/icons.jsx';
+import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconWarning, ICON_MD } from '../lib/icons.jsx';
 
 const EMPTY_FORM = {
   name: '', email: '', phone: '', address: '',
@@ -139,21 +139,7 @@ export default function Companies() {
     onChange: (e) => setForm(f => ({ ...f, [key]: e.target.checked })),
   });
 
-  /* ── Archive / reactivate ───────────────────────────── */
-  const toggleActive = async (company) => {
-    try {
-      await api.updateCompany(company.id, {
-        name: company.name, email: company.email, phone: company.phone, address: company.address,
-        gstin: company.gstin, legal_name: company.legal_name, state_code: company.state_code,
-        pan: company.pan, scheme: company.scheme, einvoice_enabled: company.einvoice_enabled,
-        active: !company.active,
-      });
-      toast.success(company.active ? `"${company.name}" archived.` : `"${company.name}" reactivated.`);
-      load();
-    } catch (e) {
-      if (!isAuthError(e)) toast.error(e.message);
-    }
-  };
+
 
   /* ── Render ─────────────────────────────────────────── */
   if (loading) return <div className="loading-page"><div className="spinner" /><span>Loading…</span></div>;
@@ -239,11 +225,7 @@ export default function Companies() {
                       <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>
                         <IconEdit size={ICON_MD} /> Edit
                       </button>
-                      <button className="btn btn-secondary btn-sm" onClick={() => toggleActive(c)}
-                              title={c.active === false ? `Reactivate ${c.name}` : `Archive ${c.name}`}
-                              aria-label={c.active === false ? `Reactivate ${c.name}` : `Archive ${c.name}`}>
-                        {c.active === false ? <IconRestore size={ICON_MD} /> : <IconArchive size={ICON_MD} />}
-                      </button>
+
                       <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}
                               title={`Delete ${c.name}`} aria-label={`Delete ${c.name}`}>
                         <IconDelete size={ICON_MD} />
@@ -339,7 +321,7 @@ export default function Companies() {
       <ConfirmDialog
         isOpen={!!confirm}
         title="Delete Company"
-        message={<>Delete <strong>{confirm?.name}</strong>? Its stock items will be removed too, and this cannot be undone. Companies that already have invoices cannot be deleted.</>}
+        message={<>Delete <strong>{confirm?.name}</strong>? Its stock items will be removed too, and this cannot be undone.</>}
         confirmText="Delete"
         busyText="Deleting…"
         danger

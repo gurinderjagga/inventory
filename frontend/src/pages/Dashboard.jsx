@@ -111,14 +111,7 @@ export default function Dashboard() {
   return (
     <div className="db-wrap page-enter">
 
-      <div className="db-toolbar">
-        <button type="button" className="btn btn-secondary btn-sm"
-                onClick={() => load({ quiet: true })} disabled={refreshing}>
-          {refreshing
-            ? <><span className="spinner" style={{ width: 13, height: 13, borderWidth: 2 }} /> Refreshing…</>
-            : <><IconRefresh size={ICON_MD} /> Refresh</>}
-        </button>
-      </div>
+
 
       {/* Low-stock alert */}
       {totalLowStock > 0 && (
@@ -136,7 +129,6 @@ export default function Dashboard() {
       {/* KPI strip */}
       <motion.div className="db-kpi-row" variants={listContainer} initial="initial" animate="animate">
         <KpiCard label="Companies"   value={companies.length} Icon={IconCompany}    accent="var(--accent)" />
-        <KpiCard label="Stock Items" value={totalItems}       Icon={IconStock}      accent="var(--info)" />
         <KpiCard label="Low Stock"   value={totalLowStock}    Icon={IconAlert}      accent={totalLowStock > 0 ? 'var(--warning)' : 'var(--success)'} />
         <KpiCard label="Stock In Today"  value={todayIn}      Icon={IconStockIn}    accent="var(--success)" />
         <KpiCard label="Stock Out Today" value={todayOut}     Icon={IconStockOut}   accent="var(--danger)" />
