@@ -11,7 +11,7 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
 import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
-import { IconAlert, IconBack, IconCheck, IconChevron, IconCompany, IconDelete, IconEdit, IconPlus, IconSearch, IconStock, IconSuccess, IconWarning, IconAdjust, IconHistory, ICON_MD } from '../lib/icons.jsx';
+import { IconAlert, IconBack, IconCheck, IconChevron, IconCompany, IconEdit, IconSearch, IconStock, IconAdjust, IconHistory, ICON_MD } from '../lib/icons.jsx';
 
 /** A human label for each stock_movements.reason value. */
 const MOVEMENT_LABELS = {
@@ -125,13 +125,6 @@ export default function Stock() {
   };
 
   /* ── Item modal ────────────────────────────────────── */
-  const openAdd = () => {
-    setForm(EMPTY_FORM);
-    setPristine(JSON.stringify(EMPTY_FORM));
-    setFormErr('');
-    setModal({ mode: 'add', data: null });
-  };
-
   const openEdit = (item) => {
     const next = {
       name: item.name, sku: item.sku || '', unit: item.unit,
@@ -349,9 +342,6 @@ export default function Stock() {
             <IconSearch size={ICON_MD} />
             <input placeholder="Search items…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-          <button className="btn btn-primary" onClick={openAdd}>
-            <IconPlus size={ICON_MD} /> Add Item
-          </button>
         </div>
       </div>
 
@@ -364,7 +354,7 @@ export default function Stock() {
           onClear={() => setSearch('')}
           noun="items"
           title="No items yet"
-          hint="Add your first stock item using the button above."
+          hint="No items have been added to this company's inventory yet."
         />
       ) : (
         <div className="table-wrapper">
@@ -438,10 +428,6 @@ export default function Stock() {
                         <button className="btn btn-secondary btn-sm" onClick={() => openHistory(item)}
                                 title={`Movement history for ${item.name}`} aria-label={`Movement history for ${item.name}`}>
                           <IconHistory size={ICON_MD} />
-                        </button>
-                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: item.id, name: item.name })}
-                                title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`}>
-                          <IconDelete size={ICON_MD} />
                         </button>
                       </div>
                     </td>
@@ -533,10 +519,6 @@ export default function Stock() {
         {formErr && <div className="login-error"><IconAlert size={ICON_MD} /><span>{formErr}</span></div>}
       </Modal>
 
-      <ConfirmDialog isOpen={!!confirm} title="Delete Item"
-        message={<>Remove <strong>{confirm?.name}</strong> from {selected.name}&rsquo;s inventory? This cannot be undone.</>}
-        confirmText="Delete" busyText="Deleting…" danger busy={deleting}
-        onConfirm={handleDelete} onCancel={() => setConfirm(null)} />
 
       {/* Adjust Stock modal */}
       {adjust && (

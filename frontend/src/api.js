@@ -83,27 +83,10 @@ export const api = {
   adjustItemQuantity: (id, d) => request('POST', `/api/items/${id}/adjust`, d),
   getItemMovements: (id) => request('GET', `/api/items/${id}/movements`),
 
-  // Goods receipts
-  getGoodsReceipts: (cid) => request('GET', `/api/goods-receipts/company/${cid}`),
-  getGoodsReceipt: (id) => request('GET', `/api/goods-receipts/${id}`),
-  createGoodsReceipt: (d) => request('POST', '/api/goods-receipts', d),
 
-  // Customers
-  getCustomers: (cid) => request('GET', `/api/customers/company/${cid}`),
-  createCustomer: (d) => request('POST', '/api/customers', d),
-  updateCustomer: (id, d) => request('PUT', `/api/customers/${id}`, d),
-  deleteCustomer: (id) => request('DELETE', `/api/customers/${id}`),
-
-  // Invoices
-  getInvoices: () => request('GET', '/api/invoices'),
-  getInvoice: (id) => request('GET', `/api/invoices/${id}`),
-  createInvoice: (d) => request('POST', '/api/invoices', d),
-  updateInvoice: (id, d) => request('PUT', `/api/invoices/${id}`, d),
-  finalizeInvoice: (id) => request('POST', `/api/invoices/${id}/finalize`),
-  reverseInvoice: (id) => request('POST', `/api/invoices/${id}/reverse`),
-  deleteInvoice: (id) => request('DELETE', `/api/invoices/${id}`),
-  getInvoiceStats: () => request('GET', '/api/invoices/summary/stats'),
-  // A real link the browser follows, so it needs the absolute URL. The cookie
-  // rides along because SameSite=None permits it on cross-site navigation.
-  pdfUrl: (id) => apiUrl(`/api/invoices/${id}/pdf`),
+  // Stock transactions
+  stockIn:           (d) => request('POST', '/api/stock/in', d),
+  stockOut:          (d) => request('POST', '/api/stock/out', d),
+  getStockMovements: (companyId, page = 1, limit = 50) =>
+    request('GET', `/api/stock/movements?company_id=${companyId}&page=${page}&limit=${limit}`),
 };

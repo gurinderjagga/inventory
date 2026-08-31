@@ -9,7 +9,7 @@ export default defineConfig({
       // All /api/* requests forwarded to the Express backend. Overridable so
       // the API can run on another port when 50001 is already taken.
       '/api': {
-        target: process.env.DEV_API_TARGET || 'http://localhost:5001',
+        target: process.env.DEV_API_TARGET || 'http://localhost:3000',
         changeOrigin: true,
       },
     },

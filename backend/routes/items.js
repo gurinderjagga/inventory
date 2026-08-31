@@ -180,12 +180,10 @@ router.post('/:id/adjust', asyncHandler(async (req, res) => {
 router.get('/:id/movements', asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Item id');
   const { rows } = await query(
-    `SELECT m.*, u.username,
-            inv.invoice_no, gr.supplier_name AS goods_receipt_supplier
+    `SELECT m.*, u.username, inv.invoice_no
      FROM stock_movements m
      LEFT JOIN users u ON u.id = m.user_id
      LEFT JOIN invoices inv ON inv.id = m.invoice_id
-     LEFT JOIN goods_receipts gr ON gr.id = m.goods_receipt_id
      WHERE m.item_id = $1
      ORDER BY m.created_at DESC, m.id DESC`,
     [id]
@@ -215,20 +213,6 @@ router.delete('/:id', asyncHandler(async (req, res) => {
     const n = invoiceRefs[0].count;
     throw new ConflictError(
       `Cannot delete "${existing[0].name}" — it appears on ${n} invoice${n === 1 ? '' : 's'}. ` +
-      `Archive it instead to take it out of circulation.`
-    );
-  }
-
-  const { rows: receiptRefs } = await query(
-    `SELECT COUNT(DISTINCT goods_receipt_id)::int AS count
-     FROM goods_receipt_line_items
-     WHERE item_id = $1`,
-    [id]
-  );
-  if (receiptRefs[0].count > 0) {
-    const n = receiptRefs[0].count;
-    throw new ConflictError(
-      `Cannot delete "${existing[0].name}" — it appears on ${n} goods receipt${n === 1 ? '' : 's'}. ` +
       `Archive it instead to take it out of circulation.`
     );
   }

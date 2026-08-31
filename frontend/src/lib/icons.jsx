@@ -16,9 +16,10 @@ import {
   Search, Plus, PlusCircle, Pencil, Trash2,
   Check, CheckCheck, CheckCircle2, X, XCircle,
   AlertTriangle, AlertCircle, Info,
-  Eye, FileDown, FilePlus2, ArrowLeft, ArrowUpCircle, ChevronRight,
+  Eye, FileDown, FilePlus2, ArrowLeft, ArrowUpCircle, ArrowDownCircle, ChevronRight,
   Boxes, Clock, Menu, ArrowUp, ArrowDown, ChevronsUpDown, RefreshCw, EyeOff,
   Archive, ArchiveRestore, Contact, Truck, History, SlidersHorizontal, Undo2,
+  PackagePlus, PackageMinus, ListOrdered,
 } from 'lucide-react';
 
 /* Navigation & entities */
@@ -61,6 +62,9 @@ export const IconGoodsReceipt = Truck;
 export const IconHistory      = History;
 export const IconAdjust       = SlidersHorizontal;
 export const IconReverse      = Undo2;
+export const IconStockIn      = PackagePlus;
+export const IconStockOut     = PackageMinus;
+export const IconTransactions = ListOrdered;
 
 /* Table sorting */
 export const IconSortAsc  = ArrowUp;

@@ -143,20 +143,6 @@ router.delete('/:id', asyncHandler(async (req, res) => {
     );
   }
 
-  // Same reasoning as invoices: a goods receipt is a real inbound-stock
-  // record, and deleting the company out from under it (cascading its items)
-  // would destroy that history too.
-  const { rows: receiptRefs } = await query(
-    'SELECT COUNT(*)::int AS count FROM goods_receipts WHERE company_id = $1',
-    [id]
-  );
-  if (receiptRefs[0].count > 0) {
-    const n = receiptRefs[0].count;
-    throw new ConflictError(
-      `Cannot delete "${existing[0].name}" — it has ${n} goods receipt${n === 1 ? '' : 's'}. ` +
-      `Keep the company for your records instead.`
-    );
-  }
 
   await query('DELETE FROM companies WHERE id = $1', [id]);
   res.json({ message: 'Company deleted successfully' });

@@ -227,34 +227,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
 
 const isBlank = (val) => val === undefined || val === null || val === '';
 
-/**
- * Resolve the billed customer, scoped to the invoice's own company — the same
- * anti-cross-tenant guard normalizeLines() applies to items, so one company
- * cannot bill against another company's customer record.
- *
- * customer_id is the primary link; customer_name/customer_email are kept as a
- * manual override (or a fallback for a caller that hasn't migrated to picking
- * a saved customer yet) rather than removed outright.
- */
-async function resolveCustomer(companyId, { customer_id, customer_name, customer_email }) {
-  let name = v.optionalString(customer_name);
-  let customerId = null;
-  let stateCode  = null;
 
-  if (!isBlank(customer_id)) {
-    customerId = v.id(customer_id, 'customer_id');
-    const { rows } = await query(
-      'SELECT id, name, state_code FROM customers WHERE id = $1 AND company_id = $2',
-      [customerId, companyId]
-    );
-    if (!rows[0]) throw new ValidationError('No such customer for this company');
-    name = name || rows[0].name;
-    stateCode = rows[0].state_code;
-  }
-
-  if (!name) throw new ValidationError('customer_name is required');
-  return { customerId, name, email: v.optionalString(customer_email), stateCode };
-}
 
 /**
  * Freeze the supplier's own GST identity onto the invoice at issue — a company
@@ -302,7 +275,12 @@ router.post('/', asyncHandler(async (req, res) => {
   const { rows: company } = await query('SELECT * FROM companies WHERE id = $1', [companyId]);
   if (!company[0]) throw new NotFoundError('Company not found');
 
-  const customer = await resolveCustomer(companyId, req.body);
+  const customer = {
+    customerId: null,
+    name: company[0].name,
+    email: company[0].email,
+    stateCode: company[0].state_code
+  };
   const supplier = snapshotSupplier(company[0]);
   const tax      = taxContext(company[0], customer);
   const lines    = await normalizeLines(companyId, line_items);
@@ -312,14 +290,14 @@ router.post('/', asyncHandler(async (req, res) => {
   const invoice = await runTransaction(async (client) => {
     const { rows } = await client.query(
       `INSERT INTO invoices
-         (invoice_no, company_id, customer_id, customer_name, customer_email, notes,
+         (invoice_no, company_id, customer_name, customer_email, notes,
           subtotal, cgst_total, sgst_total, igst_total, round_off, total, status,
           supplier_gstin, supplier_name, supplier_address, supplier_state_code, supplier_scheme,
           place_of_supply_state)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', $13, $14, $15, $16, $17, $18)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17)
        RETURNING *`,
       [
-        generateInvoiceNo(), companyId, customer.customerId, customer.name,
+        generateInvoiceNo(), companyId, customer.name,
         customer.email, v.optionalString(notes),
         subtotal, cgstTotal, sgstTotal, igstTotal, roundOff, total,
         supplier.gstin, supplier.name, supplier.address, supplier.stateCode, supplier.scheme,
@@ -356,7 +334,12 @@ router.put('/:id', asyncHandler(async (req, res) => {
   // scratch here too: the customer or line items can change on a draft, and
   // both feed the tax engine.
   const { rows: company } = await query('SELECT * FROM companies WHERE id = $1', [current.company_id]);
-  const customer = await resolveCustomer(current.company_id, req.body);
+  const customer = {
+    customerId: null,
+    name: company[0].name,
+    email: company[0].email,
+    stateCode: company[0].state_code
+  };
   const tax      = taxContext(company[0], customer);
   const lines    = await normalizeLines(current.company_id, line_items);
   const { subtotal, cgstTotal, sgstTotal, igstTotal, roundOff, total, lineTaxes } =
@@ -374,13 +357,13 @@ router.put('/:id', asyncHandler(async (req, res) => {
 
     const { rows } = await client.query(
       `UPDATE invoices
-       SET customer_id = $1, customer_name = $2, customer_email = $3, notes = $4,
+       SET customer_name = $2, customer_email = $3, notes = $4,
            subtotal = $5, cgst_total = $6, sgst_total = $7, igst_total = $8,
            round_off = $9, total = $10, place_of_supply_state = $11, updated_at = now()
        WHERE id = $12
        RETURNING *`,
       [
-        customer.customerId, customer.name, customer.email, v.optionalString(notes),
+        null, customer.name, customer.email, v.optionalString(notes),
         subtotal, cgstTotal, sgstTotal, igstTotal, roundOff, total, customer.stateCode, id,
       ]
     );

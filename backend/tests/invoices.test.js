@@ -3,10 +3,9 @@ const assert = require('node:assert/strict');
 
 const { setupDatabase, resetData, teardownDatabase, query } = require('./helpers/db');
 const { startServer, stopServer, agent } = require('./helpers/client');
-const { createUser, createCompany, createItem, createCustomer, stockOf } = require('./helpers/fixtures');
-const { lockItemRow, waitForBlockedBackends } = require('./helpers/concurrency');
+const { createUser, createCompany, createItem, stockOf } = require('./helpers/fixtures');
 
-let a, company, item, customer;
+let a, company, item;
 
 test.before(async () => {
   await setupDatabase();
@@ -31,14 +30,12 @@ test.beforeEach(async () => {
     gstin: '27ABCDE1234F1Z5', legal_name: 'TechCorp Supplies Pvt Ltd', state_code: '27',
   });
   item = await createItem(company.id, { quantity: 10, unit_price: 59.99 });
-  customer = await createCustomer(company.id, { name: 'Riya Sharma', state_code: '27' });
 });
 
 /** The happy path, in one place, since most tests below start from it. */
 async function createDraft(overrides = {}) {
   return a.post('/api/invoices', {
     company_id: company.id,
-    customer_id: customer.id,
     line_items: [{ item_id: item.id, quantity: 2, unit_price: 59.99 }],
     ...overrides,
   });
@@ -99,20 +96,7 @@ test('CGST and SGST are computed per line and the total rounds to the nearest ru
   assert.equal(Number(res.body.round_off), 0.42);
 });
 
-test('IGST is charged in full when the customer is in a different state', async () => {
-  const outOfState = await createCustomer(company.id, { name: 'Out of State Co', state_code: '07' });
-  const taxed = await createItem(company.id, { name: 'Taxed Widget', sku: 'TAX-3', quantity: 10, unit_price: 59.99, gst_rate: 18 });
 
-  const res = await createDraft({
-    customer_id: outOfState.id,
-    line_items: [{ item_id: taxed.id, quantity: 2, unit_price: 59.99 }],
-  });
-
-  assert.equal(Number(res.body.cgst_total), 0);
-  assert.equal(Number(res.body.sgst_total), 0);
-  assert.equal(Number(res.body.igst_total), 21.60);   // 119.98 * 0.18 = 21.5964 -> 21.60
-  assert.equal(res.body.place_of_supply_state, '07');
-});
 
 test('stored amounts never carry more than two decimal places', async () => {
   // A price and quantity chosen to produce a long tail: 1.005 × 3 = 3.015.
@@ -163,7 +147,6 @@ test('the subtotal equals the sum of the line totals shown', async () => {
 test('the line item name comes from the database, not the request', async () => {
   const res = await a.post('/api/invoices', {
     company_id: company.id,
-    customer_id: customer.id,
     line_items: [{ item_id: item.id, item_name: 'Something Else Entirely', quantity: 1, unit_price: 59.99 }],
   });
 
@@ -175,7 +158,6 @@ test('an invoice cannot bill another company\'s stock', async () => {
   const other = await createCompany('Global Electronics');
   const res = await a.post('/api/invoices', {
     company_id: other.id,
-    customer_name: 'Riya Sharma',
     line_items: [{ item_id: item.id, quantity: 1, unit_price: 10 }],
   });
 
@@ -183,15 +165,11 @@ test('an invoice cannot bill another company\'s stock', async () => {
   assert.match(res.body.error, /No such item/i);
 });
 
-test('an invoice needs a company, a customer and at least one line', async () => {
+test('an invoice needs a company and at least one line', async () => {
   const noCompany = await a.post('/api/invoices', {
-    customer_name: 'X',
     line_items: [{ item_id: item.id, quantity: 1, unit_price: 1 }],
   });
   assert.equal(noCompany.status, 400);
-
-  const noCustomer = await createDraft({ customer_id: null, customer_name: '' });
-  assert.equal(noCustomer.status, 400);
 
   const noLines = await createDraft({ line_items: [] });
   assert.equal(noLines.status, 400);
@@ -289,13 +267,10 @@ test('a draft can be edited, and its totals recomputed', async () => {
   const draft = await createDraft();
 
   const res = await a.put(`/api/invoices/${draft.body.id}`, {
-    customer_id: customer.id,
-    customer_name: 'Riya Sharma (edited)',
     line_items: [{ item_id: item.id, quantity: 1, unit_price: 59.99 }],
   });
 
   assert.equal(res.status, 200);
-  assert.equal(res.body.customer_name, 'Riya Sharma (edited)');
   assert.equal(Number(res.body.total), 59.99);
 
   const detail = await a.get(`/api/invoices/${draft.body.id}`);
@@ -308,7 +283,6 @@ test('a finalized invoice can be neither edited nor deleted', async () => {
   await a.post(`/api/invoices/${draft.body.id}/finalize`);
 
   const edit = await a.put(`/api/invoices/${draft.body.id}`, {
-    customer_name: 'Nope',
     line_items: [{ item_id: item.id, quantity: 1, unit_price: 1 }],
   });
   assert.equal(edit.status, 409);
@@ -364,32 +338,7 @@ test('invoice numbers are unique across a burst of creations', async () => {
   assert.equal(numbers.size, made.length, 'invoice numbers collided');
 });
 
-/* ── Phase 2: customers, supplier snapshot ───────────────────────────────── */
 
-test('an invoice raised against a saved customer picks up its name', async () => {
-  const named = await createCustomer(company.id, { name: 'Priya Patel', gstin: null, state_code: '27' });
-  const res = await createDraft({ customer_id: named.id, customer_name: undefined });
-
-  assert.equal(res.status, 201);
-  assert.equal(res.body.customer_id, named.id);
-  assert.equal(res.body.customer_name, 'Priya Patel');
-});
-
-test('a customer_name override wins over the saved customer name', async () => {
-  const named = await createCustomer(company.id, { name: 'Priya Patel', state_code: '27' });
-  const res = await createDraft({ customer_id: named.id, customer_name: 'Attn: Accounts' });
-
-  assert.equal(res.body.customer_name, 'Attn: Accounts');
-});
-
-test('a customer belonging to another company cannot be billed', async () => {
-  const other = await createCompany('Global Electronics');
-  const foreignCustomer = await createCustomer(other.id);
-
-  const res = await createDraft({ customer_id: foreignCustomer.id, customer_name: undefined });
-  assert.equal(res.status, 400);
-  assert.match(res.body.error, /No such customer/i);
-});
 
 test('the supplier GSTIN, name, address and state are snapshotted at creation', async () => {
   const res = await createDraft();
@@ -417,11 +366,8 @@ test('an unregistered company charges no tax even if its items carry a GST rate'
   const unregistered = await createCompany('Local Traders');
   const ratedItem = await createItem(unregistered.id, { quantity: 5, unit_price: 20, gst_rate: 18 });
 
-  // No customer_id needed: an unregistered company never reaches the
-  // place-of-supply requirement, since it never charges tax in the first place.
   const res = await a.post('/api/invoices', {
     company_id: unregistered.id,
-    customer_name: 'Riya Sharma',
     line_items: [{ item_id: ratedItem.id, quantity: 1, unit_price: 20 }],
   });
 
@@ -432,47 +378,6 @@ test('an unregistered company charges no tax even if its items carry a GST rate'
   assert.equal(Number(res.body.total), 20);
 });
 
-test('a composition-scheme company charges no tax even if its items carry a GST rate', async () => {
-  const composition = await createCompany('Composition Traders', {
-    gstin: '07FGHIJ5678K1Z2', scheme: 'composition', state_code: '07',
-  });
-  const compositionCustomer = await createCustomer(composition.id, { name: 'Buyer', state_code: '07' });
-  const ratedItem = await createItem(composition.id, { quantity: 5, unit_price: 20, gst_rate: 18 });
-
-  const res = await a.post('/api/invoices', {
-    company_id: composition.id,
-    customer_id: compositionCustomer.id,
-    line_items: [{ item_id: ratedItem.id, quantity: 1, unit_price: 20 }],
-  });
-
-  assert.equal(res.status, 201);
-  assert.equal(Number(res.body.cgst_total), 0);
-  assert.equal(Number(res.body.sgst_total), 0);
-  assert.equal(Number(res.body.igst_total), 0);
-  assert.equal(res.body.total, 20);
-});
-
-test('a registered, regular-scheme company cannot bill a manual-entry customer', async () => {
-  // Place of supply is the customer's state, so a name with no saved record
-  // behind it can't be taxed correctly — the company must bill a saved
-  // customer instead.
-  const res = await a.post('/api/invoices', {
-    company_id: company.id,
-    customer_name: 'Whoever Shows Up',
-    line_items: [{ item_id: item.id, quantity: 1, unit_price: 59.99 }],
-  });
-
-  assert.equal(res.status, 400);
-  assert.match(res.body.error, /state/i);
-});
-
-test('a saved customer with no state on file is also refused for a tax-charging company', async () => {
-  const noState = await createCustomer(company.id, { name: 'No State Co' });   // state_code null by default
-  const res = await createDraft({ customer_id: noState.id, customer_name: undefined });
-
-  assert.equal(res.status, 400);
-  assert.match(res.body.error, /state/i);
-});
 
 test('invoice_no can repeat across two different companies', async () => {
   const first = await createDraft();
@@ -518,7 +423,7 @@ test('two companies finalizing interleaved get independent series', async () => 
 
   const mine  = await createDraft();
   const theirs = await a.post('/api/invoices', {
-    company_id: other.id, customer_name: 'Someone Else',
+    company_id: other.id,
     line_items: [{ item_id: otherItem.id, quantity: 1, unit_price: 5 }],
   });
 

@@ -13,7 +13,7 @@ import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
 import { IconSuccess, IconPending, IconAlert, IconCheck, IconClose, IconCompany, IconDelete, IconEdit, IconFinalize, IconInvoice, IconNewInvoice, IconPdf, IconPlus, IconPlusCircle, IconSearch, IconUp, IconView, IconWarning, IconReverse, ICON_MD } from '../lib/icons.jsx';
 
-const EMPTY_CUSTOMER_FORM = { name: '', address: '', gstin: '', state_code: '' };
+
 
 /* ── New Invoice line-item state helper ─────────────── */
 // quantity and unit_price are held as raw strings while the user types.
@@ -28,7 +28,7 @@ const toNum = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const EMPTY_INV_FORM = { company_id: '', customer_id: '', customer_name: '', customer_email: '', notes: '' };
+const EMPTY_INV_FORM = { company_id: '', notes: '' };
 
 /**
  * Client-side mirror of the server's tax engine (routes/invoices.js), for a
@@ -132,8 +132,6 @@ export default function Invoices() {
   const [invModal, setInvModal]     = useState(null);
   const [companies, setCompanies]   = useState([]);
   const [companyItems, setCompanyItems] = useState([]);
-  const [customerOptions, setCustomerOptions] = useState([]);
-  const [newCustomer, setNewCustomer] = useState(null);   // null | { form, saving, err }
   const [invForm, setInvForm]       = useState(EMPTY_INV_FORM);
   const [lines, setLines]           = useState([]);
   const [createErr, setCreateErr]   = useState('');
@@ -211,9 +209,8 @@ export default function Invoices() {
       let startForm = EMPTY_INV_FORM;
       if (data.length === 1) {
         startForm = { ...EMPTY_INV_FORM, company_id: String(data[0].id) };
-        const [items, customers] = await Promise.all([api.getItems(data[0].id), api.getCustomers(data[0].id)]);
+        const items = await api.getItems(data[0].id);
         setCompanyItems(items);
-        setCustomerOptions(customers);
       }
       setInvForm(startForm);
       setPristine(JSON.stringify({ invForm: startForm, lines: [] }));
@@ -236,14 +233,10 @@ export default function Invoices() {
         return;
       }
       setCompanies(comps);
-      const [items, customers] = await Promise.all([api.getItems(inv.company_id), api.getCustomers(inv.company_id)]);
+      const items = await api.getItems(inv.company_id);
       setCompanyItems(items);
-      setCustomerOptions(customers);
       const startForm = {
         company_id:     String(inv.company_id),
-        customer_id:    inv.customer_id ? String(inv.customer_id) : '',
-        customer_name:  inv.customer_name || '',
-        customer_email: inv.customer_email || '',
         notes:          inv.notes || '',
       };
       const startLines = inv.line_items.map(li => ({
@@ -268,47 +261,13 @@ export default function Invoices() {
 
   /* ── Company changed → load items ──────────────────── */
   const onCompanyChange = async (cid) => {
-    setInvForm(f => ({ ...f, company_id: cid, customer_id: '', customer_name: '' }));
+    setInvForm(f => ({ ...f, company_id: cid }));
     setLines([]);
-    if (!cid) { setCompanyItems([]); setCustomerOptions([]); return; }
+    if (!cid) { setCompanyItems([]); return; }
     try {
-      const [items, customers] = await Promise.all([api.getItems(cid), api.getCustomers(cid)]);
+      const items = await api.getItems(cid);
       setCompanyItems(items);
-      setCustomerOptions(customers);
     } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
-  };
-
-  /** Picking a saved customer fills the name; it stays editable as an override. */
-  const onCustomerChange = (customerId) => {
-    const customer = customerOptions.find(c => String(c.id) === String(customerId));
-    setInvForm(f => ({ ...f, customer_id: customerId, customer_name: customer?.name || f.customer_name }));
-  };
-
-  /* ── Add a customer without leaving the invoice ─────── */
-  const openNewCustomer = () => setNewCustomer({ form: EMPTY_CUSTOMER_FORM, saving: false, err: '' });
-  const closeNewCustomer = () => setNewCustomer(null);
-
-  const saveNewCustomer = async () => {
-    if (!newCustomer.form.name.trim()) {
-      setNewCustomer(nc => ({ ...nc, err: 'Customer name is required.' }));
-      return;
-    }
-    setNewCustomer(nc => ({ ...nc, saving: true, err: '' }));
-    try {
-      const created = await api.createCustomer({
-        company_id: Number(invForm.company_id),
-        name: newCustomer.form.name.trim(),
-        address: newCustomer.form.address.trim() || null,
-        gstin: newCustomer.form.gstin.trim() || null,
-        state_code: newCustomer.form.state_code.trim() || null,
-      });
-      setCustomerOptions(list => [...list, created]);
-      setInvForm(f => ({ ...f, customer_id: String(created.id), customer_name: created.name }));
-      toast.success('Customer added.');
-      setNewCustomer(null);
-    } catch (e) {
-      setNewCustomer(nc => ({ ...nc, saving: false, err: e.message }));
-    }
   };
 
   /* ── Line item helpers ──────────────────────────────── */
@@ -354,8 +313,7 @@ export default function Invoices() {
 
   /* ── Totals ─────────────────────────────────────────── */
   const selectedCompany  = companies.find(c => String(c.id) === invForm.company_id);
-  const selectedCustomer = customerOptions.find(c => String(c.id) === invForm.customer_id);
-  const tax = computeTax(lines, selectedCompany, selectedCustomer, companyItems);
+  const tax = computeTax(lines, selectedCompany, selectedCompany, companyItems);
 
   /* ── Stock feasibility, recomputed as the user types ── */
   const { requested, shortfalls } = stockCheck(lines, companyItems);
@@ -372,12 +330,11 @@ export default function Invoices() {
   const handleSubmit = async () => {
     setCreateErr('');
     if (!invForm.company_id) { setCreateErr('Please select a company.'); return; }
-    if (!invForm.customer_name.trim()) { setCreateErr('Customer name is required.'); return; }
     if (lines.length === 0) { setCreateErr('Add at least one line item.'); return; }
     if (lines.some(l => !l.item_id)) { setCreateErr('All line items must have an item selected.'); return; }
     if (lines.some(l => toNum(l.quantity) <= 0)) { setCreateErr('All quantities must be greater than 0.'); return; }
     if (tax.needsCustomerState && !tax.hasCustomerState) {
-      setCreateErr('This company is GST-registered — pick a saved customer with a state on file, rather than a manual name, so tax can be computed.');
+      setCreateErr('This company is GST-registered but has no state on file. Tax cannot be computed.');
       return;
     }
     if (shortfalls.size > 0) {
@@ -395,9 +352,6 @@ export default function Invoices() {
       // Select values are strings; send real numbers so the payload does not
       // depend on the database coercing "3" into an integer.
       const payload = {
-        customer_id:    invForm.customer_id ? Number(invForm.customer_id) : null,
-        customer_name:  invForm.customer_name.trim(),
-        customer_email: invForm.customer_email.trim() || null,
         notes:          invForm.notes.trim() || null,
         line_items:     lines.map(l => ({
           item_id:    Number(l.item_id),
@@ -657,32 +611,6 @@ export default function Invoices() {
               </div>
             )}
           </div>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label>Customer</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <select
-                style={{ flex: 1 }}
-                value={invForm.customer_id}
-                onChange={e => onCustomerChange(e.target.value)}
-                disabled={!invForm.company_id}
-              >
-                <option value="">Manual entry…</option>
-                {customerOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={openNewCustomer}
-                      disabled={!invForm.company_id} title="Add a new customer">
-                <IconPlus size={ICON_MD} />
-              </button>
-            </div>
-          </div>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label>Customer Name <span style={{ color: 'var(--danger)' }}>*</span></label>
-            <input type="text" placeholder="e.g. John Doe" {...fld('customer_name')} />
-          </div>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label>Customer Email</label>
-            <input type="email" placeholder="customer@email.com" {...fld('customer_email')} />
-          </div>
         </div>
         {selectedCompany && (
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: -8, marginBottom: 16 }}>
@@ -855,47 +783,7 @@ export default function Invoices() {
         )}
       </Modal>
 
-      {/* ── Add customer, without leaving the invoice ────── */}
-      {newCustomer && (
-        <Modal isOpen={!!newCustomer} onClose={closeNewCustomer} title="Add Customer"
-          onSubmit={saveNewCustomer}
-          footer={
-            <>
-              <button type="button" className="btn btn-secondary" onClick={closeNewCustomer}>Cancel</button>
-              <button className="btn btn-primary" disabled={newCustomer.saving}>
-                {newCustomer.saving
-                  ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</>
-                  : <><IconCheck size={ICON_MD} /> Add Customer</>}
-              </button>
-            </>
-          }
-        >
-          <div className="form-group">
-            <label>Customer Name <span style={{ color: 'var(--danger)' }}>*</span></label>
-            <input type="text" placeholder="e.g. Riya Sharma" autoFocus
-                   value={newCustomer.form.name}
-                   onChange={e => setNewCustomer(nc => ({ ...nc, form: { ...nc.form, name: e.target.value } }))} />
-          </div>
-          <div className="form-row">
-            <div className="form-group">
-              <label>GSTIN (optional)</label>
-              <input type="text" maxLength={15}
-                     value={newCustomer.form.gstin}
-                     onChange={e => setNewCustomer(nc => ({ ...nc, form: { ...nc.form, gstin: e.target.value } }))} />
-              <small className="field-hint">Only needed for a registered business customer (B2B)</small>
-            </div>
-            <div className="form-group">
-              <label>State Code (optional)</label>
-              <input type="text" maxLength={2}
-                     value={newCustomer.form.state_code}
-                     onChange={e => setNewCustomer(nc => ({ ...nc, form: { ...nc.form, state_code: e.target.value } }))} />
-            </div>
-          </div>
-          {newCustomer.err && (
-            <div className="login-error"><IconAlert size={ICON_MD} /><span>{newCustomer.err}</span></div>
-          )}
-        </Modal>
-      )}
+
 
       {/* ── View Invoice Modal ──────────────────────────── */}
       {viewInv && (
