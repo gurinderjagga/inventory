@@ -26,7 +26,7 @@ async function authMiddlewareImpl(req, res, next) {
   }
 
   const { rows } = await query(
-    'SELECT id, username FROM users WHERE id = $1',
+    'SELECT id, username, role FROM users WHERE id = $1',
     [payload.id]
   );
 
@@ -34,6 +34,18 @@ async function authMiddlewareImpl(req, res, next) {
   if (!user) {
     // The account was deleted while the cookie was still valid.
     return res.status(401).json({ error: 'Your account no longer exists — please log in again' });
+  }
+
+  // An admin's access is implicit (every company), so companyIds is only
+  // loaded for a sub-admin — the one role whose access is actually a subset.
+  // Loaded here, once per request, so route handlers and requireCompanyAccess
+  // never need a second query to find out what a sub-admin can touch.
+  if (user.role === 'sub_admin') {
+    const { rows: assigned } = await query(
+      'SELECT company_id FROM user_companies WHERE user_id = $1',
+      [user.id]
+    );
+    user.companyIds = assigned.map((r) => r.company_id);
   }
 
   req.user = user;

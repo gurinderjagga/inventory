@@ -27,9 +27,8 @@ test('signing in returns the account and sets a session cookie', async () => {
   assert.ok(res.body.id, 'expected an id in the response');
   assert.ok(a.cookies.has('token'), 'expected a token cookie');
 
-  // The tenancy rewrite removed these; a regression would quietly leak the
-  // shape the frontend no longer expects.
-  assert.equal(res.body.role, undefined);
+  // createUser('admin') defaults to the admin role.
+  assert.equal(res.body.role, 'admin');
   assert.equal(res.body.company_id, undefined);
   assert.equal(res.body.password, undefined);
 });
@@ -68,7 +67,7 @@ test('/me reflects the signed-in account, and 401s without a session', async () 
 
   assert.equal(me.status, 200);
   assert.equal(me.body.username, 'admin');
-  assert.equal(me.body.role, undefined);
+  assert.equal(me.body.role, 'admin');
 });
 
 test('signing out clears the session', async () => {
@@ -122,7 +121,7 @@ test('a password under 8 characters is refused', async () => {
 
 test('protected endpoints reject an unauthenticated caller', async () => {
   const anon = agent();
-  for (const path of ['/api/users', '/api/companies', '/api/invoices', '/api/items/company/1']) {
+  for (const path of ['/api/users', '/api/companies', '/api/stock/movements?company_id=1', '/api/items/company/1']) {
     assert.equal((await anon.get(path)).status, 401, `${path} should require a session`);
   }
 });

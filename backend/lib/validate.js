@@ -149,8 +149,20 @@ function boolean(raw, { fallback = false } = {}) {
   return raw === true || raw === 'true';
 }
 
+const ROLES = ['admin', 'sub_admin'];
+
+/** Validate a user role, defaulting to 'admin' — the same default the column carries. */
+function role(raw, { fallback = 'admin' } = {}) {
+  if (isBlank(raw)) return fallback;
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!ROLES.includes(s)) {
+    throw new ValidationError(`Role must be one of: ${ROLES.join(', ')}`);
+  }
+  return s;
+}
+
 module.exports = {
   nonNegativeNumber, id, requiredString, optionalString,
-  password, username, gstin, pan, boolean,
+  password, username, gstin, pan, boolean, role,
   PASSWORD_MIN,
 };

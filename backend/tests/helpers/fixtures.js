@@ -15,12 +15,24 @@ async function passwordHash() {
 }
 
 /** An account to sign in with. Returns its row. */
-async function createUser(username = 'admin') {
+async function createUser(username = 'admin', role = 'admin') {
   const { rows } = await query(
-    'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username',
-    [username, await passwordHash()]
+    'INSERT INTO users (username, password, role) VALUES ($1, $2, $3) RETURNING id, username, role',
+    [username, await passwordHash(), role]
   );
   return rows[0];
+}
+
+/** A sub-admin scoped to the given company ids. */
+async function createSubAdmin(username, companyIds) {
+  const user = await createUser(username, 'sub_admin');
+  for (const companyId of companyIds) {
+    await query(
+      'INSERT INTO user_companies (user_id, company_id) VALUES ($1, $2)',
+      [user.id, companyId]
+    );
+  }
+  return user;
 }
 
 async function createCompany(name = 'TechCorp Supplies', overrides = {}) {
@@ -71,26 +83,10 @@ async function createItem(companyId, overrides = {}) {
   return rows[0];
 }
 
-async function createCustomer(companyId, overrides = {}) {
-  const c = {
-    name: 'Acme Retail',
-    address: '2 Market Road, Mumbai',
-    gstin: null,
-    state_code: null,
-    ...overrides,
-  };
-  const { rows } = await query(
-    `INSERT INTO customers (company_id, name, address, gstin, state_code)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [companyId, c.name, c.address, c.gstin, c.state_code]
-  );
-  return rows[0];
-}
-
 /** Read an item's current stock — the value most assertions turn on. */
 async function stockOf(itemId) {
   const { rows } = await query('SELECT quantity FROM items WHERE id = $1', [itemId]);
   return rows[0] ? Number(rows[0].quantity) : null;
 }
 
-module.exports = { PASSWORD, createUser, createCompany, createItem, createCustomer, stockOf };
+module.exports = { PASSWORD, createUser, createSubAdmin, createCompany, createItem, stockOf };

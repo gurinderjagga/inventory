@@ -1,6 +1,7 @@
 const express = require('express');
 const { query, PG_UNIQUE_VIOLATION } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
+const { requireAdmin, requireCompanyAccess } = require('../middleware/rbac');
 const { asyncHandler } = require('../middleware/asyncHandler');
 const { NotFoundError, ConflictError, ValidationError } = require('../lib/errors');
 const v = require('../lib/validate');
@@ -27,6 +28,7 @@ function readBody(body) {
     pan:              v.pan(body.pan),
     scheme,
     einvoiceEnabled:  v.boolean(body.einvoice_enabled),
+    signatoryName:    v.optionalString(body.authorized_signatory_name),
   };
 }
 
@@ -36,8 +38,10 @@ function readActive(body, current) {
 }
 
 // GET /api/companies  — all companies with item + low stock counts.
-// A company admin sees only their own company.
+// An admin sees every company; a sub-admin sees only the ones assigned to it.
 router.get('/', asyncHandler(async (req, res) => {
+  const scoped = req.user.role === 'sub_admin';
+
   // COALESCE keeps the aggregates numeric for companies with no items,
   // where SUM() would otherwise return NULL.
   const { rows } = await query(`
@@ -48,9 +52,10 @@ router.get('/', asyncHandler(async (req, res) => {
       COALESCE(SUM(i.quantity * i.unit_price), 0)                            AS stock_value
     FROM companies c
     LEFT JOIN items i ON i.company_id = c.id
+    ${scoped ? 'WHERE c.id = ANY($1)' : ''}
     GROUP BY c.id
     ORDER BY c.name
-  `);
+  `, scoped ? [req.user.companyIds] : []);
 
   // COUNT/SUM over bigint come back as strings from pg; the client expects
   // numbers for arithmetic and comparisons.
@@ -63,7 +68,7 @@ router.get('/', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/companies/:id
-router.get('/:id', asyncHandler(async (req, res) => {
+router.get('/:id', requireCompanyAccess(req => req.params.id), asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Company id');
   const { rows } = await query('SELECT * FROM companies WHERE id = $1', [id]);
   if (!rows[0]) throw new NotFoundError('Company not found');
@@ -79,15 +84,16 @@ function throwOnUniqueViolation(err) {
   throw new ConflictError('A company with that name already exists');
 }
 
-// POST /api/companies
-router.post('/', asyncHandler(async (req, res) => {
+// POST /api/companies — creating a new tenant record is admin-only; a
+// sub-admin can only be given access to companies that already exist.
+router.post('/', requireAdmin, asyncHandler(async (req, res) => {
   const c = readBody(req.body);
   try {
     const { rows } = await query(
-      `INSERT INTO companies (name, email, phone, address, gstin, legal_name, state_code, pan, scheme, einvoice_enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO companies (name, email, phone, address, gstin, legal_name, state_code, pan, scheme, einvoice_enabled, authorized_signatory_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [c.name, c.email, c.phone, c.address, c.gstin, c.legalName, c.stateCode, c.pan, c.scheme, c.einvoiceEnabled]
+      [c.name, c.email, c.phone, c.address, c.gstin, c.legalName, c.stateCode, c.pan, c.scheme, c.einvoiceEnabled, c.signatoryName]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -95,8 +101,8 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 }));
 
-// PUT /api/companies/:id
-router.put('/:id', asyncHandler(async (req, res) => {
+// PUT /api/companies/:id — a sub-admin may edit a company it manages.
+router.put('/:id', requireCompanyAccess(req => req.params.id), asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Company id');
   const c  = readBody(req.body);
 
@@ -107,12 +113,13 @@ router.put('/:id', asyncHandler(async (req, res) => {
   try {
     const { rows } = await query(
       `UPDATE companies
-       SET name = $1, email = $2, phone = $3, address = $4, gstin = $5, legal_name = $6,           state_code = $7, pan = $8, scheme = $9, einvoice_enabled = $10, active = $11,
-           updated_at = now()
-       WHERE id = $12
+       SET name = $1, email = $2, phone = $3, address = $4, gstin = $5, legal_name = $6,
+           state_code = $7, pan = $8, scheme = $9, einvoice_enabled = $10, active = $11,
+           authorized_signatory_name = $12, updated_at = now()
+       WHERE id = $13
        RETURNING *`,
       [c.name, c.email, c.phone, c.address, c.gstin, c.legalName, c.stateCode, c.pan,
-        c.scheme, c.einvoiceEnabled, active, id]
+        c.scheme, c.einvoiceEnabled, active, c.signatoryName, id]
     );
     if (!rows[0]) throw new NotFoundError('Company not found');
     res.json(rows[0]);
@@ -121,8 +128,9 @@ router.put('/:id', asyncHandler(async (req, res) => {
   }
 }));
 
-// DELETE /api/companies/:id
-router.delete('/:id', asyncHandler(async (req, res) => {
+// DELETE /api/companies/:id — destructive and tenant-level, so admin-only
+// even for a sub-admin who otherwise manages this company.
+router.delete('/:id', requireAdmin, asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Company id');
 
   const { rows: existing } = await query('SELECT name FROM companies WHERE id = $1', [id]);

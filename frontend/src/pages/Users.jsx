@@ -10,9 +10,12 @@ import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
 import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
 import { formatDate } from '../lib/format.js';
-import { IconAlert, IconCheck, IconDelete, IconEdit, IconSearch, IconUserPlus, IconUsers, ICON_MD } from '../lib/icons.jsx';
+import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconSearch, IconShield, IconUser, IconUserPlus, IconUsers, ICON_MD } from '../lib/icons.jsx';
 
-const EMPTY_FORM = { username: '', password: '' };
+// New accounts default to sub_admin: an admin already has unscoped access by
+// definition, so the common reason to add someone here is to hand them a
+// scoped set of companies, not to mint another admin.
+const EMPTY_FORM = { username: '', password: '', role: 'sub_admin' };
 
 const SORT_COLUMNS = {
   username:   r => r.username,
@@ -25,10 +28,11 @@ function TableSkeleton() {
   return (
     <div className="skeleton-table" style={{ marginTop: 16 }}>
       <div className="skeleton-thead">
-        {[1, 2, 3].map(i => <div key={i} className="skeleton-bar" />)}
+        {[1, 2, 3, 4].map(i => <div key={i} className="skeleton-bar" />)}
       </div>
       {[1, 2, 3, 4].map(i => (
         <div key={i} className="skeleton-row" style={{ opacity: 1 - i * 0.12 }}>
+          <div className="skeleton-bar" />
           <div className="skeleton-bar" />
           <div className="skeleton-bar" />
           <div className="skeleton-bar" />
@@ -54,6 +58,13 @@ export default function Users() {
   const [confirm, setConfirm]     = useState(null);
   const [deleting, setDeleting]   = useState(false);
   const [pristine, setPristine]   = useState('');
+
+  // Company-assignment modal for a sub-admin, opened from its row.
+  const [companyModal, setCompanyModal]     = useState(null); // null | user row
+  const [allCompanies, setAllCompanies]     = useState([]);
+  const [assignedIds, setAssignedIds]       = useState(new Set());
+  const [companiesLoading, setCompaniesLoading] = useState(false);
+  const [togglingId, setTogglingId]         = useState(null);
 
   const dirty = !!modal && JSON.stringify(form) !== pristine;
 
@@ -85,7 +96,7 @@ export default function Users() {
 
   const openEdit = (u) => {
     // Password intentionally blank: leaving it empty keeps the existing one.
-    const next = { username: u.username, password: '' };
+    const next = { username: u.username, password: '', role: u.role };
     setForm(next);
     setPristine(JSON.stringify(next));
     setFormErr('');
@@ -111,7 +122,7 @@ export default function Users() {
       return setFormErr('Password must be at least 8 characters, or leave it blank to keep the current one.');
     }
 
-    const payload = { username: form.username.trim() };
+    const payload = { username: form.username.trim(), role: form.role };
     if (form.password) payload.password = form.password;
 
     setSaving(true);
@@ -148,6 +159,49 @@ export default function Users() {
       if (!isAuthError(e)) toast.error(e.message, 'Could not delete account');
     } finally {
       setDeleting(false);
+    }
+  };
+
+  /* ── Company assignment (sub-admins only) ────────────── */
+  const openCompanies = async (u) => {
+    setCompanyModal(u);
+    setCompaniesLoading(true);
+    try {
+      const [companies, assigned] = await Promise.all([
+        api.getCompanies(),
+        api.getUserCompanies(u.id),
+      ]);
+      setAllCompanies(companies);
+      setAssignedIds(new Set(assigned.map(c => c.id)));
+    } catch (e) {
+      if (!isAuthError(e)) toast.error(e.message);
+      setCompanyModal(null);
+    } finally {
+      setCompaniesLoading(false);
+    }
+  };
+
+  const closeCompanies = () => setCompanyModal(null);
+
+  const toggleCompany = async (companyId, currentlyAssigned) => {
+    if (togglingId) return; // one in-flight toggle at a time keeps this simple
+    setTogglingId(companyId);
+    try {
+      if (currentlyAssigned) {
+        await api.unassignUserCompany(companyModal.id, companyId);
+        setAssignedIds(prev => {
+          const next = new Set(prev);
+          next.delete(companyId);
+          return next;
+        });
+      } else {
+        await api.assignUserCompany(companyModal.id, companyId);
+        setAssignedIds(prev => new Set(prev).add(companyId));
+      }
+    } catch (e) {
+      if (!isAuthError(e)) toast.error(e.message, 'Could not update company access');
+    } finally {
+      setTogglingId(null);
     }
   };
 
@@ -193,6 +247,7 @@ export default function Users() {
               <thead>
                 <tr>
                   <SortableTh sortKey="username"   sort={sort} onToggle={toggle}>Username</SortableTh>
+                  <th>Role</th>
                   <SortableTh sortKey="created_at" sort={sort} onToggle={toggle}>Created</SortableTh>
                   <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
@@ -211,11 +266,21 @@ export default function Users() {
                           {isSelf && <span className="badge badge-neutral">you</span>}
                         </div>
                       </td>
+                      <td>
+                        {u.role === 'admin'
+                          ? <span className="badge badge-success"><IconShield size={ICON_MD} /> Admin</span>
+                          : <span className="badge badge-neutral"><IconUser size={ICON_MD} /> Sub-admin</span>}
+                      </td>
                       <td className="cell-muted" style={{ whiteSpace: 'nowrap' }}>
                         {formatDate(u.created_at)}
                       </td>
                       <td>
                         <div className="td-actions">
+                          {u.role === 'sub_admin' && (
+                            <button className="btn btn-secondary btn-sm" onClick={() => openCompanies(u)}>
+                              <IconCompany size={ICON_MD} /> Companies
+                            </button>
+                          )}
                           <button className="btn btn-secondary btn-sm" onClick={() => openEdit(u)}>
                             <IconEdit size={ICON_MD} /> Edit
                           </button>
@@ -277,10 +342,18 @@ export default function Users() {
           </small>
         </div>
 
-        {/* Every account has the same access — there are no roles to assign. */}
-        <p style={{ fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>
-          Accounts can view and manage every company, its stock, and its invoices.
-        </p>
+        <div className="form-group">
+          <label>Access Level</label>
+          <select {...field('role')}>
+            <option value="sub_admin">Sub-admin — only assigned companies</option>
+            <option value="admin">Admin — every company</option>
+          </select>
+          <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
+            {form.role === 'admin'
+              ? 'Can see and manage every company, and manage other accounts.'
+              : 'Can only see and manage companies you assign it, from the "Companies" button on its row.'}
+          </small>
+        </div>
 
         {formErr && (
           <div className="login-error" style={{ marginTop: 12 }}>
@@ -300,6 +373,53 @@ export default function Users() {
         onConfirm={handleDelete}
         onCancel={() => setConfirm(null)}
       />
+
+      {/* Company assignment — which companies a sub-admin can see and manage */}
+      <Modal
+        isOpen={!!companyModal}
+        onClose={closeCompanies}
+        title={`Companies: ${companyModal?.username || ''}`}
+        footer={<button type="button" className="btn btn-primary" onClick={closeCompanies}>Done</button>}
+      >
+        {companiesLoading ? (
+          <div className="skeleton-table">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="skeleton-row" style={{ opacity: 1 - i * 0.15 }}>
+                <div className="skeleton-bar" />
+              </div>
+            ))}
+          </div>
+        ) : allCompanies.length === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+            No companies exist yet — add one from the Companies page first.
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 320, overflowY: 'auto' }}>
+            {allCompanies.map(c => {
+              const isAssigned = assignedIds.has(c.id);
+              return (
+                <label
+                  key={c.id}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+                    borderRadius: 8, cursor: togglingId ? 'wait' : 'pointer',
+                    background: isAssigned ? 'var(--surface-hover, rgba(127,127,127,0.08))' : 'transparent',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isAssigned}
+                    disabled={togglingId === c.id}
+                    onChange={() => toggleCompany(c.id, isAssigned)}
+                  />
+                  <IconCompany size={ICON_MD} />
+                  <span style={{ fontSize: 13.5 }}>{c.name}</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

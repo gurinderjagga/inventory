@@ -17,6 +17,7 @@ const Companies         = lazy(() => import('./pages/Companies.jsx'));
 const Stock             = lazy(() => import('./pages/Stock.jsx'));
 const StockTransactions = lazy(() => import('./pages/StockTransactions.jsx'));
 const Users             = lazy(() => import('./pages/Users.jsx'));
+const Invoices          = lazy(() => import('./pages/Invoices.jsx'));
 
 // Preload starters — called on nav hover/focus so the chunk fetch begins
 // before the click event. Returns the same dynamic-import promise every time
@@ -27,6 +28,7 @@ export const preloadPage = {
   '/stock':        () => import('./pages/Stock.jsx'),
   '/transactions': () => import('./pages/StockTransactions.jsx'),
   '/users':        () => import('./pages/Users.jsx'),
+  '/invoices':     () => import('./pages/Invoices.jsx'),
 };
 
 function LoadingPage() {
@@ -57,6 +59,15 @@ function ProtectedLayout() {
   return <Layout />;
 }
 
+// Wraps a route that only an admin may reach. Placed inside ProtectedLayout,
+// so a signed-in sub-admin who navigates here directly (not just via a hidden
+// nav link) is bounced to the dashboard rather than hitting a 403 from the API.
+function AdminRoute({ children }) {
+  const { user } = useAuth();
+  if (user?.role !== 'admin') return <Navigate to="/" replace />;
+  return children;
+}
+
 export default function App() {
   return (
     <MotionConfig reducedMotion="user">
@@ -77,7 +88,8 @@ export default function App() {
               <Route path="/companies" element={<Companies />} />
               <Route path="/stock" element={<Stock />} />
               <Route path="/transactions" element={<StockTransactions />} />
-              <Route path="/users" element={<Users />} />
+              <Route path="/invoices" element={<Invoices />} />
+              <Route path="/users" element={<AdminRoute><Users /></AdminRoute>} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />

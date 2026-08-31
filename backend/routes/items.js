@@ -1,6 +1,7 @@
 const express = require('express');
 const { query, runTransaction, PG_UNIQUE_VIOLATION } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
+const { requireCompanyAccess } = require('../middleware/rbac');
 const { asyncHandler } = require('../middleware/asyncHandler');
 const { NotFoundError, ConflictError } = require('../lib/errors');
 const v = require('../lib/validate');
@@ -9,6 +10,12 @@ const { applyMovement } = require('../lib/stockLedger');
 
 const router = express.Router();
 router.use(authMiddleware);
+
+/** Resolve the company an existing item belongs to, for requireCompanyAccess. */
+async function companyIdForItem(req) {
+  const { rows } = await query('SELECT company_id FROM items WHERE id = $1', [v.id(req.params.id, 'Item id')]);
+  return rows[0]?.company_id;
+}
 
 /**
  * Read and validate the item payload shared by POST and PUT, so both enforce
@@ -48,7 +55,7 @@ function readActive(body, current) {
 }
 
 // GET /api/items/company/:companyId  — items scoped to a company
-router.get('/company/:companyId', asyncHandler(async (req, res) => {
+router.get('/company/:companyId', requireCompanyAccess(req => req.params.companyId), asyncHandler(async (req, res) => {
   const companyId = v.id(req.params.companyId, 'Company id');
   const { rows } = await query(
     'SELECT * FROM items WHERE company_id = $1 ORDER BY name ASC',
@@ -58,7 +65,7 @@ router.get('/company/:companyId', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/items/:id
-router.get('/:id', asyncHandler(async (req, res) => {
+router.get('/:id', requireCompanyAccess(companyIdForItem), asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Item id');
   const { rows } = await query('SELECT * FROM items WHERE id = $1', [id]);
   if (!rows[0]) throw new NotFoundError('Item not found');
@@ -66,7 +73,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/items
-router.post('/', asyncHandler(async (req, res) => {
+router.post('/', requireCompanyAccess(req => req.body.company_id), asyncHandler(async (req, res) => {
   const companyId       = v.id(req.body.company_id, 'company_id');
   const item            = readBody(req.body);
   const startingQuantity = money.quantity(v.nonNegativeNumber(req.body.quantity, 'Quantity', { fallback: 0 }));
@@ -118,7 +125,7 @@ router.post('/', asyncHandler(async (req, res) => {
 // PUT /api/items/:id — everything about an item except its stock. Quantity
 // changes only through POST /:id/adjust (or a document that moves stock),
 // never a bare overwrite here — see readBody().
-router.put('/:id', asyncHandler(async (req, res) => {
+router.put('/:id', requireCompanyAccess(companyIdForItem), asyncHandler(async (req, res) => {
   const id   = v.id(req.params.id, 'Item id');
   const item = readBody(req.body);
 
@@ -150,7 +157,7 @@ router.put('/:id', asyncHandler(async (req, res) => {
 // POST /api/items/:id/adjust — a manual stock correction. The only quantity
 // mutation that takes a raw new total rather than a computed delta, because
 // that is how a physical count is actually phrased ("it's really 47").
-router.post('/:id/adjust', asyncHandler(async (req, res) => {
+router.post('/:id/adjust', requireCompanyAccess(companyIdForItem), asyncHandler(async (req, res) => {
   const id          = v.id(req.params.id, 'Item id');
   const newQuantity = money.quantity(v.nonNegativeNumber(req.body.quantity, 'Quantity'));
   const reason      = v.requiredString(req.body.reason, 'Reason');
@@ -177,7 +184,7 @@ router.post('/:id/adjust', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/items/:id/movements — the ledger for one item, newest first.
-router.get('/:id/movements', asyncHandler(async (req, res) => {
+router.get('/:id/movements', requireCompanyAccess(companyIdForItem), asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Item id');
   const { rows } = await query(
     `SELECT m.*, u.username, inv.invoice_no
@@ -192,7 +199,7 @@ router.get('/:id/movements', asyncHandler(async (req, res) => {
 }));
 
 // DELETE /api/items/:id
-router.delete('/:id', asyncHandler(async (req, res) => {
+router.delete('/:id', requireCompanyAccess(companyIdForItem), asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Item id');
 
   const { rows: existing } = await query('SELECT name FROM items WHERE id = $1', [id]);

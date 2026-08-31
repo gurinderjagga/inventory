@@ -42,7 +42,7 @@ export function AuthProvider({ children }) {
     setSessionExpired(false);
     // Keep the same shape /me returns, so a fresh login and a page reload
     // produce an identical user object.
-    setUser({ id: data.id, username: data.username });
+    setUser({ id: data.id, username: data.username, role: data.role });
     return data;
   }, []);
 

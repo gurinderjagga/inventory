@@ -16,7 +16,7 @@ import { IconAlert, IconCheck, IconCompany, IconDelete, IconEdit, IconPlus, Icon
 const EMPTY_FORM = {
   name: '', email: '', phone: '', address: '',
   gstin: '', legal_name: '', state_code: '', pan: '',
-  scheme: 'regular', einvoice_enabled: false,
+  scheme: 'regular', einvoice_enabled: false, authorized_signatory_name: '',
 };
 
 const SORT_COLUMNS = {
@@ -53,6 +53,10 @@ function TableSkeleton() {
 
 export default function Companies() {
   const { toast }   = useToast();
+  const { user }    = useAuth();
+  // Creating and deleting companies is admin-only on the backend (see
+  // routes/companies.js) — a sub-admin can still edit a company it manages.
+  const isAdmin = user?.role === 'admin';
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [search, setSearch]       = useState('');
@@ -65,6 +69,18 @@ export default function Companies() {
   // Snapshot taken when the modal opens, so "has anything changed?" is an
   // honest comparison rather than a guess.
   const [pristine, setPristine]   = useState('');
+
+  // Feature toggles for the company currently open in the edit modal.
+  // `registry` (the full catalogue of keys) is admin-only, loaded once; the
+  // per-company enabled set is fetched fresh each time edit opens.
+  const [featureRegistry, setFeatureRegistry] = useState([]);
+  const [enabledFeatures, setEnabledFeatures] = useState(new Set());
+  const [featureToggling, setFeatureToggling] = useState(null);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    api.getFeatureRegistry().then(setFeatureRegistry).catch(() => {});
+  }, [isAdmin]);
 
   const dirty = !!modal && JSON.stringify(form) !== pristine;
 
@@ -104,14 +120,44 @@ export default function Companies() {
       gstin: company.gstin || '', legal_name: company.legal_name || '',
       state_code: company.state_code || '', pan: company.pan || '',
       scheme: company.scheme || 'regular', einvoice_enabled: !!company.einvoice_enabled,
+      authorized_signatory_name: company.authorized_signatory_name || '',
     };
     setForm(next);
     setPristine(JSON.stringify(next));
     setFormErr('');
     setModal({ mode: 'edit', data: company });
+
+    if (isAdmin) {
+      setEnabledFeatures(new Set());
+      api.getCompanyFeatures(company.id)
+        .then(keys => setEnabledFeatures(new Set(keys)))
+        .catch(() => {});
+    }
   };
 
   const closeModal = () => { setModal(null); setSaving(false); };
+
+  const toggleFeature = async (key, currentlyEnabled) => {
+    if (featureToggling) return; // one in-flight toggle at a time keeps this simple
+    setFeatureToggling(key);
+    try {
+      if (currentlyEnabled) {
+        await api.disableCompanyFeature(modal.data.id, key);
+        setEnabledFeatures(prev => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      } else {
+        await api.enableCompanyFeature(modal.data.id, key);
+        setEnabledFeatures(prev => new Set(prev).add(key));
+      }
+    } catch (e) {
+      if (!isAuthError(e)) toast.error(e.message, 'Could not update feature');
+    } finally {
+      setFeatureToggling(null);
+    }
+  };
 
   /* ── Save (optimistic) ──────────────────────────────── */
   const handleSave = async () => {
@@ -191,9 +237,11 @@ export default function Companies() {
             <IconSearch size={ICON_MD} />
             <input placeholder="Search companies…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-          <button className="btn btn-primary" onClick={openAdd}>
-            <IconPlus size={ICON_MD} /> Add Company
-          </button>
+          {isAdmin && (
+            <button className="btn btn-primary" onClick={openAdd}>
+              <IconPlus size={ICON_MD} /> Add Company
+            </button>
+          )}
         </div>
       </div>
 
@@ -257,10 +305,12 @@ export default function Companies() {
                         <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>
                           <IconEdit size={ICON_MD} /> Edit
                         </button>
-                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}
-                                title={`Delete ${c.name}`} aria-label={`Delete ${c.name}`}>
-                          <IconDelete size={ICON_MD} />
-                        </button>
+                        {isAdmin && (
+                          <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}
+                                  title={`Delete ${c.name}`} aria-label={`Delete ${c.name}`}>
+                            <IconDelete size={ICON_MD} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </motion.tr>
@@ -342,6 +392,46 @@ export default function Companies() {
             </label>
           </div>
         </div>
+        <div className="form-group">
+          <label>Authorized Signatory Name</label>
+          <input type="text" placeholder="Printed on invoice PDFs, e.g. Rahul Mehta" {...field('authorized_signatory_name')} />
+          <small className="field-hint">Shown under the signature line on invoices — there is no digital signature integration.</small>
+        </div>
+
+        {/* Feature toggles — which optional modules this company gets. Only
+            meaningful once the company exists, so edit-mode only. */}
+        {isAdmin && modal?.mode === 'edit' && featureRegistry.length > 0 && (
+          <div className="form-group">
+            <label>Features</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {featureRegistry.map(f => {
+                const isEnabled = enabledFeatures.has(f.key);
+                return (
+                  <label
+                    key={f.key}
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 8,
+                      cursor: featureToggling ? 'wait' : 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isEnabled}
+                      disabled={featureToggling === f.key}
+                      onChange={() => toggleFeature(f.key, isEnabled)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>
+                      <span style={{ display: 'block', fontSize: 13 }}>{f.label}</span>
+                      <small style={{ color: 'var(--text-muted)', fontSize: 11 }}>{f.description}</small>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {formErr && (
           <div className="login-error">
             <IconAlert size={ICON_MD} /><span>{formErr}</span>

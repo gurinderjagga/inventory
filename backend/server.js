@@ -145,6 +145,8 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/companies', require('./routes/companies'));
 app.use('/api/items', require('./routes/items'));
 app.use('/api/stock', require('./routes/stock'));
+app.use('/api/features', require('./routes/features'));
+app.use('/api/invoices', require('./routes/invoices'));
 
 // ── Unknown API Routes ───────────────────────────────────────
 // Must sit after the API routes but before the SPA fallback, so an unknown

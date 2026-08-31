@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { api } from '../api.js';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import { pageVariants } from '../lib/motion.js';
 import { preloadPage } from '../App.jsx';
 import ChangePasswordModal from './ChangePasswordModal.jsx';
 import {
-  IconDashboard, IconCompany, IconStock, IconTransactions, IconUsers,
+  IconDashboard, IconCompany, IconStock, IconTransactions, IconUsers, IconInvoice,
   IconBrand, IconLogout, IconKey, IconMenu, IconClose, ICON_MD, ICON_LG,
 } from '../lib/icons.jsx';
 
@@ -15,7 +16,12 @@ const NAV = [
   { to: '/companies',    label: 'Companies',           Icon: IconCompany },
   { to: '/stock',        label: 'Stock',               Icon: IconStock },
   { to: '/transactions', label: 'Stock Transactions',  Icon: IconTransactions },
-  { to: '/users',        label: 'Users',               Icon: IconUsers },
+  // Only shown once invoicing is turned on for at least one company the
+  // signed-in user can reach — see the `invoicingEnabled` check below.
+  { to: '/invoices',     label: 'Invoices',            Icon: IconInvoice, feature: 'invoicing' },
+  // Account management is admin-only on the backend — hidden rather than
+  // shown-then-403'd for a sub-admin.
+  { to: '/users',        label: 'Users',               Icon: IconUsers, adminOnly: true },
 ];
 
 const PAGE_TITLES = {
@@ -23,6 +29,7 @@ const PAGE_TITLES = {
   '/companies':      'Companies',
   '/stock':          'Stock Management',
   '/transactions':   'Stock Transactions',
+  '/invoices':       'Invoices',
   '/users':          'User Accounts',
 };
 
@@ -74,6 +81,25 @@ export default function Layout() {
 
   const pageTitle = PAGE_TITLES[location.pathname] || 'StockFlow';
   const initial   = user?.username?.[0]?.toUpperCase() ?? 'A';
+
+  // Gates the Invoices nav link — true once the feature is on for at least
+  // one company this user can reach. Re-checked per signed-in user, since a
+  // sub-admin's reachable companies (and therefore this answer) differ from
+  // an admin's.
+  const [invoicingEnabled, setInvoicingEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.isFeatureEnabledAnywhere('invoicing')
+      .then(({ enabled }) => { if (!cancelled) setInvoicingEnabled(enabled); })
+      .catch(() => { if (!cancelled) setInvoicingEnabled(false); });
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
+  const visibleNav = NAV.filter(item => {
+    if (item.adminOnly && user?.role !== 'admin') return false;
+    if (item.feature === 'invoicing' && !invoicingEnabled) return false;
+    return true;
+  });
 
   // Navigating is the whole point of the drawer, so close it on arrival.
   useEffect(() => { setNavOpen(false); }, [location.pathname]);
@@ -148,7 +174,7 @@ export default function Layout() {
         {/* Navigation */}
         <nav className="sidebar-nav" role="navigation">
           <div className="nav-section-label">Main</div>
-          {NAV.map(item => (
+          {visibleNav.map(item => (
             <NavLink
               key={item.to}
               to={item.to}

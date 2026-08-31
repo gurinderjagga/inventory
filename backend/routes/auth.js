@@ -29,7 +29,7 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   }
 
   const { rows } = await query(
-    'SELECT id, username, password FROM users WHERE username = $1',
+    'SELECT id, username, password, role FROM users WHERE username = $1',
     [username.trim()]
   );
   const user = rows[0];
@@ -55,6 +55,7 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
     message:  'Login successful',
     id:       user.id,
     username: user.username,
+    role:     user.role,
   });
 }));
 
@@ -101,6 +102,7 @@ router.get('/me', authMiddleware, (req, res) => {
   res.json({
     id:       req.user.id,
     username: req.user.username,
+    role:     req.user.role,
   });
 });
 

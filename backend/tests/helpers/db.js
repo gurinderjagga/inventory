@@ -59,7 +59,7 @@ async function setupDatabase() {
 async function resetData() {
   await query(`
     TRUNCATE TABLE
-      stock_movements,
+      stock_movements, user_companies, company_features,
       invoice_number_series, invoice_line_items, invoices, items, companies, users
     RESTART IDENTITY CASCADE
   `);

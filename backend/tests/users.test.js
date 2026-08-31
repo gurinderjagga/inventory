@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { setupDatabase, resetData, teardownDatabase, query } = require('./helpers/db');
 const { startServer, stopServer, agent } = require('./helpers/client');
-const { createUser, PASSWORD } = require('./helpers/fixtures');
+const { createUser, createSubAdmin, createCompany, PASSWORD } = require('./helpers/fixtures');
 
 let a;
 
@@ -29,7 +29,7 @@ test('accounts are listed without password hashes', async () => {
   assert.equal(res.body.length, 1);
   assert.equal(res.body[0].username, 'admin');
   assert.equal(res.body[0].password, undefined, 'a password hash must never leave the API');
-  assert.equal(res.body[0].role, undefined);
+  assert.equal(res.body[0].role, 'admin');
   assert.equal(res.body[0].company_id, undefined);
 });
 
@@ -43,17 +43,79 @@ test('a new account can be created and immediately sign in', async () => {
   assert.equal(me.username, 'warehouse_ops');
 });
 
-test('every account has the same access', async () => {
+test('a new account defaults to admin, with full access', async () => {
   await a.post('/api/users', { username: 'warehouse_ops', password: 'ops-password-1' });
 
   const other = agent();
   await other.login('warehouse_ops', 'ops-password-1');
 
-  // No roles means no gated endpoints — including account management itself.
-  for (const path of ['/api/users', '/api/companies', '/api/invoices']) {
-    assert.equal((await other.get(path)).status, 200, `${path} should be open to any account`);
+  for (const path of ['/api/users', '/api/companies']) {
+    assert.equal((await other.get(path)).status, 200, `${path} should be open to an admin`);
   }
   assert.equal((await other.post('/api/companies', { name: 'Made By Ops' })).status, 201);
+});
+
+test('user management is admin-only', async () => {
+  const company = await createCompany('Sub Co');
+  const sub = await createSubAdmin('sub_ops', [company.id]);
+  const other = agent();
+  await other.login('sub_ops', PASSWORD);
+
+  for (const call of [
+    () => other.get('/api/users'),
+    () => other.post('/api/users', { username: 'nope', password: 'irrelevant1' }),
+    () => other.get(`/api/users/${sub.id}/companies`),
+  ]) {
+    assert.equal((await call()).status, 403);
+  }
+});
+
+test('a sub-admin only sees companies assigned to it', async () => {
+  const own    = await createCompany('Assigned Co');
+  const other  = await createCompany('Other Co');
+  const sub    = await createSubAdmin('sub_ops', [own.id]);
+
+  const subAgent = agent();
+  await subAgent.login('sub_ops', PASSWORD);
+
+  const list = await subAgent.get('/api/companies');
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.body.map(c => c.id), [own.id]);
+
+  assert.equal((await subAgent.get(`/api/companies/${own.id}`)).status, 200);
+  // Another admin's company: reported as not found, not forbidden, so a
+  // sub-admin probing ids cannot tell "doesn't exist" from "not mine".
+  assert.equal((await subAgent.get(`/api/companies/${other.id}`)).status, 404);
+
+  // The admin who created `sub`, and the company assignment, still works.
+  assert.equal((await a.get('/api/companies')).body.length, 2);
+});
+
+test('assigning and unassigning a company changes what a sub-admin can reach', async () => {
+  const company = await createCompany('Reassign Co');
+  const sub = await createSubAdmin('sub_ops', []);
+  const subAgent = agent();
+  await subAgent.login('sub_ops', PASSWORD);
+
+  assert.equal((await subAgent.get(`/api/companies/${company.id}`)).status, 404);
+
+  const assign = await a.post(`/api/users/${sub.id}/companies`, { company_id: company.id });
+  assert.equal(assign.status, 201);
+  assert.equal((await subAgent.get(`/api/companies/${company.id}`)).status, 200);
+
+  const unassign = await a.del(`/api/users/${sub.id}/companies/${company.id}`);
+  assert.equal(unassign.status, 200);
+  assert.equal((await subAgent.get(`/api/companies/${company.id}`)).status, 404);
+});
+
+test('the last admin cannot be demoted', async () => {
+  // `a` (admin) is the only admin. Add a sub-admin so the "only account"
+  // guard isn't what's doing the refusing.
+  await createSubAdmin('sub_ops', []);
+  const me = await a.get('/api/auth/me');
+
+  const demote = await a.put(`/api/users/${me.body.id}`, { username: 'admin', role: 'sub_admin' });
+  assert.equal(demote.status, 409);
 });
 
 test('a duplicate username is refused', async () => {

@@ -10,6 +10,7 @@
 const express = require('express');
 const { query, runTransaction } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
+const { requireCompanyAccess } = require('../middleware/rbac');
 const { asyncHandler } = require('../middleware/asyncHandler');
 const { NotFoundError, ConflictError, ValidationError } = require('../lib/errors');
 const v = require('../lib/validate');
@@ -21,7 +22,7 @@ router.use(authMiddleware);
 
 // ── POST /api/stock/in ───────────────────────────────────────────────────────
 // Receive stock: increase an item's quantity and log a 'stock_in' movement.
-router.post('/in', asyncHandler(async (req, res) => {
+router.post('/in', requireCompanyAccess(req => req.body.company_id), asyncHandler(async (req, res) => {
   const companyId = v.id(req.body.company_id, 'company_id');
   const itemId    = v.id(req.body.item_id, 'item_id');
   const quantity  = money.quantity(v.nonNegativeNumber(req.body.quantity, 'Quantity'));
@@ -59,7 +60,7 @@ router.post('/in', asyncHandler(async (req, res) => {
 
 // ── POST /api/stock/out ──────────────────────────────────────────────────────
 // Dispatch stock: decrease an item's quantity and log a 'stock_out' movement.
-router.post('/out', asyncHandler(async (req, res) => {
+router.post('/out', requireCompanyAccess(req => req.body.company_id), asyncHandler(async (req, res) => {
   const companyId = v.id(req.body.company_id, 'company_id');
   const itemId    = v.id(req.body.item_id, 'item_id');
   const quantity  = money.quantity(v.nonNegativeNumber(req.body.quantity, 'Quantity'));
@@ -105,7 +106,7 @@ router.post('/out', asyncHandler(async (req, res) => {
 // ── GET /api/stock/movements ─────────────────────────────────────────────────
 // Paginated movement history for a company, newest first.
 // Query params: company_id (required), page (default 1), limit (default 50)
-router.get('/movements', asyncHandler(async (req, res) => {
+router.get('/movements', requireCompanyAccess(req => req.query.company_id), asyncHandler(async (req, res) => {
   const companyId = v.id(req.query.company_id, 'company_id');
   const page      = Math.max(1, parseInt(req.query.page,  10) || 1);
   const limit     = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));

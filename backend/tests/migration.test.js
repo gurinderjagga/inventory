@@ -8,35 +8,6 @@ test.before(setupDatabase);
 test.after(teardownDatabase);
 test.beforeEach(resetData);
 
-/**
- * Put the users table back into its pre-migration shape: role and company_id
- * columns, both CHECK constraints, and the index. Mirrors exactly what the
- * removed `applySchemaUpdates` used to build.
- */
-async function restoreTenantSchema() {
-  await query(`
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS company_id INTEGER
-      REFERENCES companies(id) ON DELETE CASCADE;
-  `);
-  await query(`UPDATE users SET role = 'admin' WHERE role IS NULL`);
-  await query(`
-    DO $$ BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_role_ck') THEN
-        ALTER TABLE users ADD CONSTRAINT users_role_ck
-          CHECK (role IN ('admin', 'company_admin'));
-      END IF;
-      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_scope_ck') THEN
-        ALTER TABLE users ADD CONSTRAINT users_scope_ck CHECK (
-          (role = 'admin'         AND company_id IS NULL) OR
-          (role = 'company_admin' AND company_id IS NOT NULL)
-        );
-      END IF;
-    END $$;
-  `);
-  await query('CREATE INDEX IF NOT EXISTS idx_users_company ON users(company_id)');
-}
-
 async function userColumns() {
   const { rows } = await query(`
     SELECT column_name FROM information_schema.columns
@@ -45,71 +16,82 @@ async function userColumns() {
   return rows.map(r => r.column_name).sort();
 }
 
-async function constraintNames() {
-  const { rows } = await query(`
-    SELECT conname FROM pg_constraint
-    WHERE conrelid = (current_schema() || '.users')::regclass
-  `);
-  return rows.map(r => r.conname);
+/** Put the users table back into its pre-Phase-6 shape: no role column at all. */
+async function restorePreRoleSchema() {
+  await query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_ck`);
+  await query(`ALTER TABLE users DROP COLUMN IF EXISTS role`);
 }
 
-test('the migration drops the tenancy columns and the accounts that used them', async () => {
-  await restoreTenantSchema();
-
-  const { rows: [company] } = await query(
-    `INSERT INTO companies (name) VALUES ('TechCorp Supplies') RETURNING id`
-  );
-  await query(
-    `INSERT INTO users (username, password, role, company_id) VALUES
-       ('platform_admin', 'x', 'admin', NULL),
-       ('techcorp_admin', 'x', 'company_admin', $1),
-       ('global_admin',   'x', 'company_admin', $1)`,
-    [company.id]
+test('the migration adds a role column that defaults every existing account to admin', async () => {
+  await restorePreRoleSchema();
+  const { rows: [user] } = await query(
+    `INSERT INTO users (username, password) VALUES ('solo', 'x') RETURNING id`
   );
 
   await applySchemaUpdates();
 
-  assert.deepEqual(await userColumns(), ['created_at', 'id', 'password', 'username']);
-
-  const names = await constraintNames();
-  assert.ok(!names.includes('users_role_ck'), 'users_role_ck should be gone');
-  assert.ok(!names.includes('users_scope_ck'), 'users_scope_ck should be gone');
-
-  const { rows } = await query('SELECT username FROM users');
-  assert.deepEqual(rows.map(r => r.username), ['platform_admin'],
-    'only the tenant logins should have been removed');
+  assert.deepEqual(await userColumns(), ['created_at', 'id', 'password', 'role', 'username']);
+  const { rows } = await query('SELECT role FROM users WHERE id = $1', [user.id]);
+  assert.equal(rows[0].role, 'admin', 'a pre-existing account keeps the access it already had');
 });
 
-test('the migration leaves accounts alone when there are no tenant logins', async () => {
-  await restoreTenantSchema();
-  await query(`INSERT INTO users (username, password, role) VALUES ('solo', 'x', 'admin')`);
-
-  await applySchemaUpdates();
-
-  const { rows } = await query('SELECT username FROM users');
-  assert.deepEqual(rows.map(r => r.username), ['solo']);
+test('the role CHECK rejects anything outside admin/sub_admin', async () => {
+  await assert.rejects(
+    query(`INSERT INTO users (username, password, role) VALUES ('bad', 'x', 'owner')`),
+    /users_role_ck/
+  );
 });
 
-test('running the migration again is a no-op', async () => {
-  await restoreTenantSchema();
-  await query(`INSERT INTO users (username, password, role) VALUES ('solo', 'x', 'admin')`);
-
+test('running the role migration again is a no-op', async () => {
+  await restorePreRoleSchema();
   await applySchemaUpdates();
   const columnsAfterFirst = await userColumns();
 
-  // The guard is what makes every boot after the first cheap and harmless.
   await applySchemaUpdates();
   await applySchemaUpdates();
 
   assert.deepEqual(await userColumns(), columnsAfterFirst);
-  const { rows } = await query('SELECT username FROM users');
-  assert.deepEqual(rows.map(r => r.username), ['solo']);
 });
 
-test('the migration runs cleanly against a database that never had tenancy', async () => {
+test('the migration runs cleanly against a database that never lacked a role column', async () => {
   // A fresh install: initDB already ran in `before`, so there is nothing to do.
   await applySchemaUpdates();
-  assert.deepEqual(await userColumns(), ['created_at', 'id', 'password', 'username']);
+  assert.deepEqual(await userColumns(), ['created_at', 'id', 'password', 'role', 'username']);
+});
+
+/* ── Phase 7 feature flags ────────────────────────────────────────────────── */
+
+test('the feature_key CHECK rejects anything outside the registry', async () => {
+  const { rows: [company] } = await query(`INSERT INTO companies (name) VALUES ('Flag Co') RETURNING id`);
+  await assert.rejects(
+    query(
+      `INSERT INTO company_features (company_id, feature_key) VALUES ($1, 'not_a_real_feature')`,
+      [company.id]
+    ),
+    /company_features_key_ck/
+  );
+});
+
+test('a registered feature key is accepted', async () => {
+  const { rows: [company] } = await query(`INSERT INTO companies (name) VALUES ('Flag Co 2') RETURNING id`);
+  await query(
+    `INSERT INTO company_features (company_id, feature_key) VALUES ($1, 'invoicing')`,
+    [company.id]
+  );
+  const { rows } = await query('SELECT feature_key FROM company_features WHERE company_id = $1', [company.id]);
+  assert.deepEqual(rows.map(r => r.feature_key), ['invoicing']);
+});
+
+test('running the feature-flags migration again is a no-op', async () => {
+  await applySchemaUpdates();
+  await applySchemaUpdates();
+  // No throw, and the constraint is still exactly one row in the catalogue.
+  const { rows } = await query(`
+    SELECT conname FROM pg_constraint
+    WHERE conname = 'company_features_key_ck_v1'
+      AND conrelid = (current_schema() || '.company_features')::regclass
+  `);
+  assert.equal(rows.length, 1);
 });
 
 /* ── Money columns ─────────────────────────────────────────────────────────── */
@@ -274,7 +256,7 @@ test('the migration adds GST fields to companies, items and invoices', async () 
   }
 
   const invoiceCols = await tableColumns('invoices');
-  for (const col of ['supplier_gstin', 'supplier_name', 'supplier_address', 'supplier_state_code', 'customer_id']) {
+  for (const col of ['supplier_gstin', 'supplier_name', 'supplier_address', 'supplier_state_code']) {
     assert.ok(invoiceCols.includes(col), `invoices.${col} should exist`);
   }
 });
@@ -502,6 +484,78 @@ test('running the tax-engine migration again is a no-op', async () => {
   await applySchemaUpdates();
   await applySchemaUpdates();
 
+  assert.deepEqual(await tableColumns('invoices'), first.invoices);
+  assert.deepEqual(await tableColumns('invoice_line_items'), first.lineItems);
+});
+
+/* ── Phase 8: invoice legal fields (Rule 46) ─────────────────────────────── */
+
+async function restorePreInvoiceLegalFieldsSchema() {
+  await query(`ALTER TABLE companies DROP COLUMN IF EXISTS authorized_signatory_name`);
+  await query(`
+    ALTER TABLE invoices
+      DROP COLUMN IF EXISTS customer_address,
+      DROP COLUMN IF EXISTS customer_gstin,
+      DROP COLUMN IF EXISTS customer_state_code,
+      DROP COLUMN IF EXISTS delivery_address,
+      DROP COLUMN IF EXISTS reverse_charge,
+      DROP COLUMN IF EXISTS supplier_signatory_name
+  `);
+  await query(`
+    ALTER TABLE invoice_line_items
+      DROP COLUMN IF EXISTS hsn_sac_code,
+      DROP COLUMN IF EXISTS uqc
+  `);
+}
+
+test('the migration adds Rule 46 fields to companies, invoices and invoice_line_items', async () => {
+  await restorePreInvoiceLegalFieldsSchema();
+
+  await applySchemaUpdates();
+
+  const companyCols = await tableColumns('companies');
+  assert.ok(companyCols.includes('authorized_signatory_name'));
+
+  const invoiceCols = await tableColumns('invoices');
+  for (const col of [
+    'customer_address', 'customer_gstin', 'customer_state_code',
+    'delivery_address', 'reverse_charge', 'supplier_signatory_name',
+  ]) {
+    assert.ok(invoiceCols.includes(col), `invoices.${col} should exist`);
+  }
+
+  const lineCols = await tableColumns('invoice_line_items');
+  assert.ok(lineCols.includes('hsn_sac_code'));
+  assert.ok(lineCols.includes('uqc'));
+});
+
+test('reverse_charge defaults to false for a pre-existing invoice row', async () => {
+  await restorePreInvoiceLegalFieldsSchema();
+  const { rows: [company] } = await query(`INSERT INTO companies (name) VALUES ('Legal Fields Co') RETURNING id`);
+  const { rows: [invoice] } = await query(
+    `INSERT INTO invoices (invoice_no, company_id, customer_name) VALUES ('INV-LF-1', $1, 'Cust') RETURNING id`,
+    [company.id]
+  );
+
+  await applySchemaUpdates();
+
+  const { rows } = await query('SELECT reverse_charge FROM invoices WHERE id = $1', [invoice.id]);
+  assert.equal(rows[0].reverse_charge, false);
+});
+
+test('running the invoice-legal-fields migration again is a no-op', async () => {
+  await restorePreInvoiceLegalFieldsSchema();
+  await applySchemaUpdates();
+  const first = {
+    companies: await tableColumns('companies'),
+    invoices: await tableColumns('invoices'),
+    lineItems: await tableColumns('invoice_line_items'),
+  };
+
+  await applySchemaUpdates();
+  await applySchemaUpdates();
+
+  assert.deepEqual(await tableColumns('companies'), first.companies);
   assert.deepEqual(await tableColumns('invoices'), first.invoices);
   assert.deepEqual(await tableColumns('invoice_line_items'), first.lineItems);
 });
