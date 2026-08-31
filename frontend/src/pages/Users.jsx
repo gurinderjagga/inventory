@@ -19,6 +19,27 @@ const SORT_COLUMNS = {
   created_at: r => new Date(r.created_at).getTime(),
 };
 
+// ── Skeleton ──────────────────────────────────────────────────────────────────
+
+function TableSkeleton() {
+  return (
+    <div className="skeleton-table" style={{ marginTop: 16 }}>
+      <div className="skeleton-thead">
+        {[1, 2, 3].map(i => <div key={i} className="skeleton-bar" />)}
+      </div>
+      {[1, 2, 3, 4].map(i => (
+        <div key={i} className="skeleton-row" style={{ opacity: 1 - i * 0.12 }}>
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
 export default function Users() {
   const { toast } = useToast();
   const { user }  = useAuth();
@@ -78,6 +99,7 @@ export default function Users() {
     onChange: (e) => setForm(f => ({ ...f, [key]: e.target.value })),
   });
 
+  /* ── Save (optimistic) ──────────────────────────────── */
   const handleSave = async () => {
     setFormErr('');
     if (form.username.trim().length < 3) return setFormErr('Username must be at least 3 characters.');
@@ -95,38 +117,41 @@ export default function Users() {
     setSaving(true);
     try {
       if (modal.mode === 'add') {
-        await api.createUser(payload);
+        const created = await api.createUser(payload);
+        setUsers(prev => [...prev, created]);
         toast.success('Account created.');
       } else {
-        await api.updateUser(modal.data.id, payload);
+        const updated = await api.updateUser(modal.data.id, payload);
+        setUsers(prev => prev.map(u => u.id === modal.data.id ? { ...u, ...updated } : u));
         toast.success('Account updated.');
       }
       closeModal();
-      load();
     } catch (e) {
       if (!isAuthError(e)) setFormErr(e.message);
       setSaving(false);
     }
   };
 
+  /* ── Delete (optimistic) ────────────────────────────── */
   const handleDelete = async () => {
     if (!confirm || deleting) return;
     const { id, username } = confirm;
     setDeleting(true);
+    const snapshot = users;
+    setUsers(prev => prev.filter(u => u.id !== id));
+    setConfirm(null);
     try {
       await api.deleteUser(id);
       toast.success(`"${username}" deleted.`);
-      load();
     } catch (e) {
+      setUsers(snapshot);
       if (!isAuthError(e)) toast.error(e.message, 'Could not delete account');
     } finally {
       setDeleting(false);
-      setConfirm(null);
     }
   };
 
-  if (loading) return <div className="loading-page"><div className="spinner" /><span>Loading…</span></div>;
-
+  /* ── Render ─────────────────────────────────────────── */
   return (
     <div className="page-enter">
       <div className="page-header">
@@ -149,66 +174,71 @@ export default function Users() {
         </div>
       </div>
 
-      {filtered.length === 0 ? (
-        <EmptyState
-          Icon={IconUsers}
-          query={search}
-          onClear={() => setSearch('')}
-          noun="accounts"
-          title="No accounts yet"
-          hint="Create an account using the button above."
-        />
-      ) : (
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <SortableTh sortKey="username"   sort={sort} onToggle={toggle}>Username</SortableTh>
-                <SortableTh sortKey="created_at" sort={sort} onToggle={toggle}>Created</SortableTh>
-                <th style={{ textAlign: 'right' }}>Actions</th>
-              </tr>
-            </thead>
-            <motion.tbody variants={listContainer} initial="initial" animate="animate">
-              {pager.visible.map(u => {
-                const isSelf = u.id === user?.id;
-                return (
-                  <motion.tr key={u.id} variants={listItem}>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div className="user-avatar" style={{ width: 28, height: 28, fontSize: 12 }}>
-                          {u.username[0]?.toUpperCase()}
+      {/* Skeleton while loading */}
+      {loading && <TableSkeleton />}
+
+      {!loading && (
+        filtered.length === 0 ? (
+          <EmptyState
+            Icon={IconUsers}
+            query={search}
+            onClear={() => setSearch('')}
+            noun="accounts"
+            title="No accounts yet"
+            hint="Create an account using the button above."
+          />
+        ) : (
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <SortableTh sortKey="username"   sort={sort} onToggle={toggle}>Username</SortableTh>
+                  <SortableTh sortKey="created_at" sort={sort} onToggle={toggle}>Created</SortableTh>
+                  <th style={{ textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <motion.tbody variants={listContainer} initial="initial" animate="animate">
+                {pager.visible.map(u => {
+                  const isSelf = u.id === user?.id;
+                  return (
+                    <motion.tr key={u.id} variants={listItem}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div className="user-avatar" style={{ width: 28, height: 28, fontSize: 12 }}>
+                            {u.username[0]?.toUpperCase()}
+                          </div>
+                          <span className="cell-primary">{u.username}</span>
+                          {isSelf && <span className="badge badge-neutral">you</span>}
                         </div>
-                        <span className="cell-primary">{u.username}</span>
-                        {isSelf && <span className="badge badge-neutral">you</span>}
-                      </div>
-                    </td>
-                    <td className="cell-muted" style={{ whiteSpace: 'nowrap' }}>
-                      {formatDate(u.created_at)}
-                    </td>
-                    <td>
-                      <div className="td-actions">
-                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(u)}>
-                          <IconEdit size={ICON_MD} /> Edit
-                        </button>
-                        {/* Deleting your own account is refused by the API; do
-                            not offer a button that cannot succeed. */}
-                        {!isSelf && (
-                          <button
-                            className="btn btn-danger btn-sm"
-                            onClick={() => setConfirm({ id: u.id, username: u.username })}
-                            title={`Delete ${u.username}`} aria-label={`Delete ${u.username}`}
-                          >
-                            <IconDelete size={ICON_MD} />
+                      </td>
+                      <td className="cell-muted" style={{ whiteSpace: 'nowrap' }}>
+                        {formatDate(u.created_at)}
+                      </td>
+                      <td>
+                        <div className="td-actions">
+                          <button className="btn btn-secondary btn-sm" onClick={() => openEdit(u)}>
+                            <IconEdit size={ICON_MD} /> Edit
                           </button>
-                        )}
-                      </div>
-                    </td>
-                  </motion.tr>
-                );
-              })}
-            </motion.tbody>
-          </table>
-        </div>
+                          {/* Deleting your own account is refused by the API; do
+                              not offer a button that cannot succeed. */}
+                          {!isSelf && (
+                            <button
+                              className="btn btn-danger btn-sm"
+                              onClick={() => setConfirm({ id: u.id, username: u.username })}
+                              title={`Delete ${u.username}`} aria-label={`Delete ${u.username}`}
+                            >
+                              <IconDelete size={ICON_MD} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </motion.tr>
+                  );
+                })}
+              </motion.tbody>
+            </table>
+          </div>
+        )
       )}
       <Pagination {...pager} noun="accounts" />
 

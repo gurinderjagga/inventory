@@ -46,6 +46,12 @@ export function formatDate(value, { short = false } = {}) {
   });
 }
 
+const INR_SHORT = new Intl.NumberFormat('en-IN', {
+  style: 'currency',
+  currency: 'INR',
+  maximumFractionDigits: 0,
+});
+
 /**
  * Rupees with no paise — for dense card stats where two decimals are noise.
  * @param {number|string} value
@@ -53,9 +59,5 @@ export function formatDate(value, { short = false } = {}) {
  */
 export function formatCurrencyShort(value) {
   const n = typeof value === 'number' ? value : parseFloat(value);
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    maximumFractionDigits: 0,
-  }).format(Number.isFinite(n) ? n : 0);
+  return INR_SHORT.format(Number.isFinite(n) ? n : 0);
 }

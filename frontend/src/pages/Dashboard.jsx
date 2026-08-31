@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { motion, animate, useReducedMotion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { api, isAuthError } from '../api.js';
+import { cached, CACHE_COMPANIES } from '../lib/cache.js';
 import { listContainer, listItem } from '../lib/motion.js';
 import { formatDate } from '../lib/format.js';
 import {
@@ -9,6 +10,54 @@ import {
   IconAlert, IconWarning,
   IconPlusCircle, IconChevron, IconRefresh, ICON_MD, ICON_LG,
 } from '../lib/icons.jsx';
+
+// ── Skeleton ──────────────────────────────────────────────────────────────────
+
+function DashboardSkeleton() {
+  return (
+    <div className="db-wrap page-enter">
+      {/* KPI strip */}
+      <div className="db-kpi-row">
+        {[1, 2, 3, 4].map(i => (
+          <div key={i} className="skeleton-kpi">
+            <div className="skeleton-bar" />
+            <div className="skeleton-bar" />
+          </div>
+        ))}
+      </div>
+
+      {/* Content grid */}
+      <div className="db-content-grid">
+        <div className="db-card">
+          <div className="skeleton-table">
+            <div className="skeleton-thead">
+              {[1, 2, 3, 4].map(i => <div key={i} className="skeleton-bar" />)}
+            </div>
+            {[1, 2, 3, 4, 5].map(i => (
+              <div key={i} className="skeleton-row" style={{ opacity: 1 - i * 0.12 }}>
+                <div className="skeleton-bar" />
+                <div className="skeleton-bar" />
+                <div className="skeleton-bar" />
+                <div className="skeleton-bar" />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="db-side">
+          <div className="db-card">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 4 }}>
+              {[1, 2, 3].map(i => (
+                <div key={i} className="skeleton-bar" style={{ height: 32, borderRadius: 4 }} />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Components ────────────────────────────────────────────────────────────────
 
 function KpiCard({ label, value, Icon, accent }) {
   return (
@@ -51,6 +100,8 @@ function reasonLabel(reason) {
   return map[reason] || reason;
 }
 
+// ── Page ──────────────────────────────────────────────────────────────────────
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [data, setData]       = useState(null);
@@ -62,16 +113,18 @@ export default function Dashboard() {
     if (quiet) setRefreshing(true);
     setError('');
     try {
-      const companies = await api.getCompanies();
-      // Load recent movements from the first company, or all companies if possible
-      // For the dashboard, grab movements across the first active company with items
-      const firstCo = companies.find(c => c.item_count > 0 && c.active !== false) || companies[0];
-      let recent = [];
-      if (firstCo) {
-        const result = await api.getStockMovements(firstCo.id, 1, 10);
-        recent = result.movements || [];
-      }
-      setData({ companies, recent, firstCo });
+      // Fetch companies (cached) and a preliminary movements list in parallel.
+      // The movements need a company ID, so we pick the best candidate from the
+      // cached company list first, then fire both requests at once.
+      const companies = await cached(CACHE_COMPANIES, () => api.getCompanies());
+      const firstCo   = companies.find(c => c.item_count > 0 && c.active !== false) || companies[0];
+
+      // Kick off movements fetch in parallel with nothing else blocking us.
+      const movResult = firstCo
+        ? await api.getStockMovements(firstCo.id, 1, 10)
+        : { movements: [] };
+
+      setData({ companies, recent: movResult.movements || [], firstCo });
     } catch (err) {
       if (!isAuthError(err)) setError(err.message);
     } finally {
@@ -82,11 +135,7 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return (
-    <div className="loading-page">
-      <div className="spinner" /><span>Loading…</span>
-    </div>
-  );
+  if (loading) return <DashboardSkeleton />;
 
   if (error) return (
     <div className="db-empty" style={{ height: 300 }}>
@@ -111,8 +160,6 @@ export default function Dashboard() {
   return (
     <div className="db-wrap page-enter">
 
-
-
       {/* Low-stock alert */}
       {totalLowStock > 0 && (
         <div className="db-alert">
@@ -128,10 +175,10 @@ export default function Dashboard() {
 
       {/* KPI strip */}
       <motion.div className="db-kpi-row" variants={listContainer} initial="initial" animate="animate">
-        <KpiCard label="Companies"   value={companies.length} Icon={IconCompany}    accent="var(--accent)" />
-        <KpiCard label="Low Stock"   value={totalLowStock}    Icon={IconAlert}      accent={totalLowStock > 0 ? 'var(--warning)' : 'var(--success)'} />
-        <KpiCard label="Stock In Today"  value={todayIn}      Icon={IconStockIn}    accent="var(--success)" />
-        <KpiCard label="Stock Out Today" value={todayOut}     Icon={IconStockOut}   accent="var(--danger)" />
+        <KpiCard label="Companies"      value={companies.length} Icon={IconCompany}    accent="var(--accent)" />
+        <KpiCard label="Low Stock"      value={totalLowStock}    Icon={IconAlert}      accent={totalLowStock > 0 ? 'var(--warning)' : 'var(--success)'} />
+        <KpiCard label="Stock In Today"  value={todayIn}         Icon={IconStockIn}    accent="var(--success)" />
+        <KpiCard label="Stock Out Today" value={todayOut}        Icon={IconStockOut}   accent="var(--danger)" />
       </motion.div>
 
       {/* Main grid */}
@@ -144,6 +191,16 @@ export default function Dashboard() {
               Recent Movements{firstCo ? ` — ${firstCo.name}` : ''}
             </span>
             <div className="db-card-head-actions">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => load({ quiet: true })}
+                disabled={refreshing}
+                title="Refresh"
+                aria-label="Refresh movements"
+              >
+                <IconRefresh size={ICON_MD} style={refreshing ? { animation: 'spin 0.8s linear infinite' } : undefined} />
+              </button>
               {recent.length > 0 && (
                 <button type="button" className="db-link-btn" onClick={() => navigate('/transactions?tab=history')}>
                   View all <IconChevron size={12} />

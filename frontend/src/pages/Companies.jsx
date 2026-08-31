@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
+import { cached, invalidate, CACHE_COMPANIES } from '../lib/cache.js';
 import { listContainer, listItem } from '../lib/motion.js';
 import { formatCurrency } from '../lib/format.js';
 import { useToast } from '../contexts/ToastContext.jsx';
@@ -27,6 +28,29 @@ const SORT_COLUMNS = {
   stock_value:     r => Number(r.stock_value || 0),
 };
 
+// ── Skeleton ──────────────────────────────────────────────────────────────────
+
+function TableSkeleton() {
+  return (
+    <div className="skeleton-table" style={{ marginTop: 16 }}>
+      <div className="skeleton-thead">
+        {[1, 2, 3, 4, 5, 6].map(i => <div key={i} className="skeleton-bar" />)}
+      </div>
+      {[1, 2, 3, 4, 5, 6].map(i => (
+        <div key={i} className="skeleton-row" style={{ opacity: 1 - i * 0.1 }}>
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
 export default function Companies() {
   const { toast }   = useToast();
   const [companies, setCompanies] = useState([]);
@@ -46,7 +70,7 @@ export default function Companies() {
 
   const load = useCallback(async () => {
     try {
-      const data = await api.getCompanies();
+      const data = await cached(CACHE_COMPANIES, () => api.getCompanies());
       setCompanies(data);
     } catch (e) {
       if (!isAuthError(e)) toast.error(e.message);
@@ -89,43 +113,53 @@ export default function Companies() {
 
   const closeModal = () => { setModal(null); setSaving(false); };
 
-  /* ── Save ───────────────────────────────────────────── */
+  /* ── Save (optimistic) ──────────────────────────────── */
   const handleSave = async () => {
     if (!form.name.trim()) { setFormErr('Company name is required.'); return; }
     setSaving(true);
     setFormErr('');
     try {
       if (modal.mode === 'add') {
-        await api.createCompany(form);
+        const created = await api.createCompany(form);
+        // Optimistic: append to local state immediately, invalidate cache
+        invalidate(CACHE_COMPANIES);
+        setCompanies(prev => [...prev, {
+          ...created,
+          item_count: 0, low_stock_count: 0, stock_value: 0,
+        }]);
         toast.success('Company created.');
       } else {
-        await api.updateCompany(modal.data.id, form);
+        const updated = await api.updateCompany(modal.data.id, form);
+        invalidate(CACHE_COMPANIES);
+        setCompanies(prev => prev.map(c => c.id === modal.data.id ? { ...c, ...updated } : c));
         toast.success('Company updated.');
       }
       closeModal();
-      load();
     } catch (e) {
       setFormErr(e.message);
       setSaving(false);
     }
   };
 
-  /* ── Delete ─────────────────────────────────────────── */
+  /* ── Delete (optimistic) ────────────────────────────── */
   const handleDelete = async () => {
     if (!confirm || deleting) return;
     const { id, name } = confirm;
-    // Stay open, showing progress, until the request settles — then close
-    // either way. The error lands in a toast that no longer times out.
     setDeleting(true);
+    // Snapshot for rollback on error
+    const snapshot = companies;
+    setCompanies(prev => prev.filter(c => c.id !== id));
+    setConfirm(null);
     try {
       await api.deleteCompany(id);
+      invalidate(CACHE_COMPANIES);
       toast.success(`"${name}" deleted.`);
-      load();
     } catch (e) {
+      // Rollback
+      setCompanies(snapshot);
       if (!isAuthError(e)) toast.error(e.message, 'Could not delete company');
     } finally {
       setDeleting(false);
-      setConfirm(null);
     }
   };
 
@@ -139,11 +173,7 @@ export default function Companies() {
     onChange: (e) => setForm(f => ({ ...f, [key]: e.target.checked })),
   });
 
-
-
   /* ── Render ─────────────────────────────────────────── */
-  if (loading) return <div className="loading-page"><div className="spinner" /><span>Loading…</span></div>;
-
   return (
     <div className="page-enter">
       {/* Header */}
@@ -151,8 +181,6 @@ export default function Companies() {
         <div className="page-header-text">
           <h2>All Companies</h2>
           <p>
-            {/* While a filter is on, the count has to describe the table the
-                user is actually looking at. */}
             {search
               ? `${filtered.length} of ${companies.length} ${companies.length === 1 ? 'company' : 'companies'} shown`
               : `${companies.length} ${companies.length === 1 ? 'company' : 'companies'} registered`}
@@ -169,74 +197,78 @@ export default function Companies() {
         </div>
       </div>
 
-      {/* Table */}
-      {filtered.length === 0 ? (
-        <EmptyState
-          Icon={IconCompany}
-          query={search}
-          onClear={() => setSearch('')}
-          noun="companies"
-          title="No companies yet"
-          hint="Add your first company using the button above."
-        />
-      ) : (
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <SortableTh sortKey="name"            sort={sort} onToggle={toggle}>Company Name</SortableTh>
-                <SortableTh sortKey="email"           sort={sort} onToggle={toggle}>Email</SortableTh>
-                <SortableTh sortKey="phone"           sort={sort} onToggle={toggle}>Phone</SortableTh>
-                <SortableTh sortKey="item_count"      sort={sort} onToggle={toggle}>Items</SortableTh>
-                <SortableTh sortKey="low_stock_count" sort={sort} onToggle={toggle}>Low Stock</SortableTh>
-                <SortableTh sortKey="stock_value"     sort={sort} onToggle={toggle} align="num">Stock Value</SortableTh>
-                <th>Status</th>
-                <th style={{ textAlign: 'right' }}>Actions</th>
-              </tr>
-            </thead>
-            <motion.tbody variants={listContainer} initial="initial" animate="animate">
-              {pager.visible.map(c => (
-                <motion.tr key={c.id} variants={listItem}>
-                  <td>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                      <div className="company-avatar-icon"><IconCompany size={ICON_MD} /></div>
-                      <span className="cell-primary">{c.name}</span>
-                    </div>
-                  </td>
-                  <td className="cell-muted">{c.email || '—'}</td>
-                  <td className="cell-muted">{c.phone || '—'}</td>
-                  <td><span className="badge badge-neutral">{c.item_count || 0}</span></td>
-                  <td>
-                    {(c.low_stock_count || 0) > 0
-                      ? <span className="badge badge-warning">{c.low_stock_count} low</span>
-                      : <span className="badge badge-success">OK</span>}
-                  </td>
-                  <td className="num num-strong">{formatCurrency(c.stock_value)}</td>
-                  <td>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', whiteSpace: 'nowrap' }}>
-                      {c.active === false
-                        ? <span className="badge badge-neutral">Archived</span>
-                        : <span className="badge badge-success">Active</span>}
-                      {c.gstin && <span className="badge badge-neutral">GST</span>}
-                    </div>
-                  </td>
-                  <td>
-                    <div className="td-actions">
-                      <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>
-                        <IconEdit size={ICON_MD} /> Edit
-                      </button>
+      {/* Skeleton while loading */}
+      {loading && <TableSkeleton />}
 
-                      <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}
-                              title={`Delete ${c.name}`} aria-label={`Delete ${c.name}`}>
-                        <IconDelete size={ICON_MD} />
-                      </button>
-                    </div>
-                  </td>
-                </motion.tr>
-              ))}
-            </motion.tbody>
-          </table>
-        </div>
+      {/* Table */}
+      {!loading && (
+        filtered.length === 0 ? (
+          <EmptyState
+            Icon={IconCompany}
+            query={search}
+            onClear={() => setSearch('')}
+            noun="companies"
+            title="No companies yet"
+            hint="Add your first company using the button above."
+          />
+        ) : (
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <SortableTh sortKey="name"            sort={sort} onToggle={toggle}>Company Name</SortableTh>
+                  <SortableTh sortKey="email"           sort={sort} onToggle={toggle}>Email</SortableTh>
+                  <SortableTh sortKey="phone"           sort={sort} onToggle={toggle}>Phone</SortableTh>
+                  <SortableTh sortKey="item_count"      sort={sort} onToggle={toggle}>Items</SortableTh>
+                  <SortableTh sortKey="low_stock_count" sort={sort} onToggle={toggle}>Low Stock</SortableTh>
+                  <SortableTh sortKey="stock_value"     sort={sort} onToggle={toggle} align="num">Stock Value</SortableTh>
+                  <th>Status</th>
+                  <th style={{ textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <motion.tbody variants={listContainer} initial="initial" animate="animate">
+                {pager.visible.map(c => (
+                  <motion.tr key={c.id} variants={listItem}>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                        <div className="company-avatar-icon"><IconCompany size={ICON_MD} /></div>
+                        <span className="cell-primary">{c.name}</span>
+                      </div>
+                    </td>
+                    <td className="cell-muted">{c.email || '—'}</td>
+                    <td className="cell-muted">{c.phone || '—'}</td>
+                    <td><span className="badge badge-neutral">{c.item_count || 0}</span></td>
+                    <td>
+                      {(c.low_stock_count || 0) > 0
+                        ? <span className="badge badge-warning">{c.low_stock_count} low</span>
+                        : <span className="badge badge-success">OK</span>}
+                    </td>
+                    <td className="num num-strong">{formatCurrency(c.stock_value)}</td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', whiteSpace: 'nowrap' }}>
+                        {c.active === false
+                          ? <span className="badge badge-neutral">Archived</span>
+                          : <span className="badge badge-success">Active</span>}
+                        {c.gstin && <span className="badge badge-neutral">GST</span>}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="td-actions">
+                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>
+                          <IconEdit size={ICON_MD} /> Edit
+                        </button>
+                        <button className="btn btn-danger btn-sm" onClick={() => setConfirm({ id: c.id, name: c.name })}
+                                title={`Delete ${c.name}`} aria-label={`Delete ${c.name}`}>
+                          <IconDelete size={ICON_MD} />
+                        </button>
+                      </div>
+                    </td>
+                  </motion.tr>
+                ))}
+              </motion.tbody>
+            </table>
+          </div>
+        )
       )}
       <Pagination {...pager} noun="companies" />
 

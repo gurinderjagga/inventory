@@ -42,7 +42,10 @@ app.use(helmet({
       frameAncestors: ["'none'"],
       baseUri:     ["'self'"],
       formAction:  ["'self'"],
-      upgradeInsecureRequests: config.isProduction ? [] : null,
+      // Conditional spread avoids passing null to helmet, which generates a
+      // warning on every request in development. In production the directive
+      // tells browsers to upgrade any remaining http:// sub-resource requests.
+      ...(config.isProduction ? { upgradeInsecureRequests: [] } : {}),
     },
   },
   // The PDF endpoint is opened in a new tab from the frontend, which is a
@@ -52,6 +55,7 @@ app.use(helmet({
   // not need and which complicates opening the PDF in a new window.
   crossOriginOpenerPolicy: false,
 }));
+
 
 // ── CORS ─────────────────────────────────────────────────────
 // Only mounted when the frontend lives on another origin. `credentials: true`
@@ -158,14 +162,29 @@ const reactDist = path.join(__dirname, '..', 'frontend', 'dist');
 const reactBuilt = fs.existsSync(reactDist);
 
 if (reactBuilt) {
-  app.use(express.static(reactDist));
+  // Hashed assets (JS chunks, CSS, fonts) get a far-future Cache-Control so
+  // returning visitors load them from disk. Vite appends a content hash to
+  // every filename it emits, so a changed file always has a new URL — safe to
+  // cache indefinitely. index.html is deliberately kept un-cached (no-store)
+  // so the browser always fetches the latest shell and its new asset URLs.
+  app.use(express.static(reactDist, {
+    maxAge: '1y',
+    immutable: true,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-store');
+      }
+    },
+  }));
 
   // Client-side routes (/companies, /stock, …) are served the SPA shell so a
   // hard refresh works. Unmatched /api paths never reach here — the JSON 404
   // handler above already answered them.
   app.get('*', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     res.sendFile(path.join(reactDist, 'index.html'));
   });
+
 } else {
   app.get('*', (_req, res) => {
     res.status(503).send(

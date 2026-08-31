@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
+import { cached, invalidate, CACHE_COMPANIES } from '../lib/cache.js';
 import { listContainer, listItem, hoverLift } from '../lib/motion.js';
 import { formatCurrency, formatCurrencyShort } from '../lib/format.js';
 import { useToast } from '../contexts/ToastContext.jsx';
@@ -12,6 +13,26 @@ import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
 import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
 import { IconAlert, IconBack, IconCheck, IconChevron, IconCompany, IconEdit, IconSearch, IconStock, IconAdjust, IconHistory, ICON_MD } from '../lib/icons.jsx';
+
+function TableSkeleton({ rows = 6 }) {
+  return (
+    <div className="skeleton-table" style={{ marginTop: 16 }}>
+      <div className="skeleton-thead">
+        {[1, 2, 3, 4, 5, 6].map(i => <div key={i} className="skeleton-bar" />)}
+      </div>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="skeleton-row" style={{ opacity: 1 - i * 0.1 }}>
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+          <div className="skeleton-bar" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 
 /** A human label for each stock_movements.reason value. */
 const MOVEMENT_LABELS = {
@@ -79,7 +100,7 @@ export default function Stock() {
   /* ── Load companies ────────────────────────────────── */
   const loadCompanies = useCallback(async () => {
     try {
-      const data = await api.getCompanies();
+      const data = await cached(CACHE_COMPANIES, () => api.getCompanies());
       setCompanies(data);
     } catch (e) { if (!isAuthError(e)) toast.error(e.message); }
     finally { setLoadingComp(false); }
@@ -257,7 +278,25 @@ export default function Stock() {
 
   /* ── Company grid ─────────────────────────────────── */
   if (!selected) {
-    if (loadingComp) return <div className="loading-page"><div className="spinner" /><span>Loading…</span></div>;
+    if (loadingComp) return (
+      <div className="page-enter">
+        <div className="page-header">
+          <div className="page-header-text">
+            <h2>Select a Company</h2>
+            <p>Click a company to view and manage its stock inventory</p>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12, marginTop: 8 }}>
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="skeleton-kpi" style={{ minHeight: 90 }}>
+              <div className="skeleton-bar" style={{ height: 12, width: '70%' }} />
+              <div className="skeleton-bar" style={{ height: 9,  width: '50%' }} />
+              <div className="skeleton-bar" style={{ height: 9,  width: '40%' }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
     return (
       <div className="page-enter">
         <div className="page-header">
@@ -346,7 +385,7 @@ export default function Stock() {
       </div>
 
       {loadingItems ? (
-        <div className="loading-page"><div className="spinner" /></div>
+        <TableSkeleton />
       ) : filteredItems.length === 0 ? (
         <EmptyState
           Icon={IconStock}

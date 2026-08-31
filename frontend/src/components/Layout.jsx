@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import { pageVariants } from '../lib/motion.js';
+import { preloadPage } from '../App.jsx';
 import ChangePasswordModal from './ChangePasswordModal.jsx';
 import {
   IconDashboard, IconCompany, IconStock, IconTransactions, IconUsers,
@@ -10,11 +11,11 @@ import {
 } from '../lib/icons.jsx';
 
 const NAV = [
-  { to: '/',              label: 'Dashboard',          Icon: IconDashboard,     exact: true },
-  { to: '/companies',     label: 'Companies',          Icon: IconCompany },
-  { to: '/stock',         label: 'Stock',              Icon: IconStock },
-  { to: '/transactions',  label: 'Stock Transactions', Icon: IconTransactions },
-  { to: '/users',         label: 'Users',              Icon: IconUsers },
+  { to: '/',             label: 'Dashboard',          Icon: IconDashboard,    exact: true },
+  { to: '/companies',    label: 'Companies',           Icon: IconCompany },
+  { to: '/stock',        label: 'Stock',               Icon: IconStock },
+  { to: '/transactions', label: 'Stock Transactions',  Icon: IconTransactions },
+  { to: '/users',        label: 'Users',               Icon: IconUsers },
 ];
 
 const PAGE_TITLES = {
@@ -24,6 +25,39 @@ const PAGE_TITLES = {
   '/transactions':   'Stock Transactions',
   '/users':          'User Accounts',
 };
+
+// ── Skeleton shown inside the content area while a lazy chunk loads ───────────
+// The sidebar and topbar stay fully visible — only the page body shimmers.
+// Rows fade out so it reads as "content loading" without a jarring blank.
+function PageContentSkeleton() {
+  return (
+    <div style={{ padding: '0 2px' }}>
+      {/* Fake page header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 20 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="skeleton-bar" style={{ height: 18, width: 160 }} />
+          <div className="skeleton-bar" style={{ height: 11, width: 110 }} />
+        </div>
+        <div className="skeleton-bar" style={{ height: 30, width: 110, borderRadius: 4 }} />
+      </div>
+      {/* Fake table */}
+      <div className="skeleton-table">
+        <div className="skeleton-thead">
+          {[1, 2, 3, 4, 5].map(i => <div key={i} className="skeleton-bar" />)}
+        </div>
+        {[1, 2, 3, 4, 5, 6].map(i => (
+          <div key={i} className="skeleton-row" style={{ opacity: 1 - i * 0.1 }}>
+            <div className="skeleton-bar" />
+            <div className="skeleton-bar" />
+            <div className="skeleton-bar" />
+            <div className="skeleton-bar" />
+            <div className="skeleton-bar" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function Layout() {
   const { user, logout }    = useAuth();
@@ -120,6 +154,11 @@ export default function Layout() {
               to={item.to}
               end={item.exact}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+              // Start fetching the page chunk as soon as the user shows intent
+              // (hover or keyboard focus). By the time they click, the download
+              // is usually complete — no loading flash on first visit.
+              onMouseEnter={preloadPage[item.to]}
+              onFocus={preloadPage[item.to]}
             >
               {({ isActive }) => (
                 <>
@@ -185,19 +224,25 @@ export default function Layout() {
         {/* Page content — React Router renders matched child here.
             Keyed on pathname so each route fades through cleanly; mode="wait"
             lets the outgoing page finish before the next one arrives, which
-            avoids two pages briefly overlapping mid-scroll. */}
+            avoids two pages briefly overlapping mid-scroll.
+
+            Suspense sits INSIDE the layout shell (not around it) so the sidebar
+            and topbar remain visible while a lazy chunk is downloading. The
+            fallback is a page-shaped skeleton rather than a blank screen. */}
         <main className="page-content">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={location.pathname}
-              variants={pageVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-            >
-              <Outlet />
-            </motion.div>
-          </AnimatePresence>
+          <Suspense fallback={<PageContentSkeleton />}>
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={location.pathname}
+                variants={pageVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+              >
+                <Outlet />
+              </motion.div>
+            </AnimatePresence>
+          </Suspense>
         </main>
       </div>
 

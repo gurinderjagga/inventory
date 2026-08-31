@@ -36,10 +36,23 @@ const pool = new Pool({
   connectionString: DATABASE_URL,
   // Neon closes idle connections server-side; keep the pool modest and
   // recycle idle clients so we never hand out a dead socket.
-  max: 10,
+  //
+  // max: 5 — Neon's free tier allows ~5 concurrent connections; 10 would cause
+  // pool-exhaustion errors under any real load on that tier.
+  //
+  // connectionTimeoutMillis: 5_000 — fail fast rather than queuing requests
+  // for 10 s when the database is unreachable. A quick 503 is more useful
+  // than a client hanging for ten seconds then timing out anyway.
+  //
+  // allowExitOnIdle: true — lets Node exit cleanly once all clients are
+  // released, without the process needing to call pool.end() first. Useful
+  // for scripts (seed.js) and prevents orphaned processes in development.
+  max: 5,
   idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 10_000,
+  connectionTimeoutMillis: 5_000,
+  allowExitOnIdle: true,
 });
+
 
 // A pooled client can fail while idle (network blip, Neon scale-to-zero).
 // Without a listener this reaches 'uncaughtException' and kills the process.

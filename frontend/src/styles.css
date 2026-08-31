@@ -121,6 +121,90 @@ textarea {
   }
 }
 
+/* ── Skeleton loading screens ─────────────────────────────── */
+/* Shimmer animation — a shine sweeps left-to-right over grey bars.   */
+/* Pure CSS, no JS, negligible CPU.                                    */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+
+.skeleton-bar {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--bg-subtle) 25%,
+    var(--border)    50%,
+    var(--bg-subtle) 75%
+  );
+  background-size: 800px 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+/* A full table-shaped skeleton — header + N rows */
+.skeleton-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-card);
+}
+
+.skeleton-thead {
+  height: 36px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+}
+
+.skeleton-thead .skeleton-bar {
+  height: 10px;
+  flex: 1;
+  max-width: 120px;
+}
+
+.skeleton-row {
+  height: 40px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+}
+
+.skeleton-row:last-child {
+  border-bottom: none;
+}
+
+.skeleton-row .skeleton-bar {
+  height: 10px;
+}
+
+.skeleton-row .skeleton-bar:nth-child(1) { flex: 2; max-width: 160px; }
+.skeleton-row .skeleton-bar:nth-child(2) { flex: 3; max-width: 220px; }
+.skeleton-row .skeleton-bar:nth-child(3) { flex: 1; max-width: 80px;  }
+.skeleton-row .skeleton-bar:nth-child(4) { flex: 1; max-width: 70px;  }
+.skeleton-row .skeleton-bar:nth-child(5) { flex: 1; max-width: 90px;  }
+
+/* KPI card skeleton — same grid as .db-kpi */
+.skeleton-kpi {
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 78px;
+}
+
+.skeleton-kpi .skeleton-bar:nth-child(1) { height: 9px;  width: 60%; }
+.skeleton-kpi .skeleton-bar:nth-child(2) { height: 22px; width: 40%; }
+
+/* ── Loading page ──────────────────────────────────────────── */
+
 /* ── 3. Utilities ─────────────────────────────────────────── */
 .hidden {
   display: none !important;

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { api, isAuthError } from '../api.js';
+import { cached, CACHE_COMPANIES } from '../lib/cache.js';
 import { useToast } from '../contexts/ToastContext.jsx';
 import { listContainer, listItem } from '../lib/motion.js';
 import { formatDate } from '../lib/format.js';
@@ -188,7 +189,7 @@ function ItemCombobox({ items, value, newItemName, onSelect, onNewItem, disabled
 // ── Multi-line Transaction Form ───────────────────────────────────────────────
 
 function TransactionForm({ mode, companies }) {
-  const { showToast } = useToast();
+  const { toast } = useToast();
   const isIn = mode === 'in';
 
   const [companyId,    setCompanyId]    = useState('');
@@ -206,9 +207,9 @@ function TransactionForm({ mode, companies }) {
     setLines([EMPTY_LINE()]);
     api.getItems(companyId)
       .then(rows => setItems(rows.filter(r => r.active !== false)))
-      .catch(err => { if (!isAuthError(err)) showToast(err.message, 'error'); })
+      .catch(err => { if (!isAuthError(err)) toast.error(err.message); })
       .finally(() => setLoadingItems(false));
-  }, [companyId, showToast]);
+  }, [companyId, toast]);
 
   const addLine    = () => setLines(ls => [...ls, EMPTY_LINE()]);
   const removeLine = (id) => setLines(ls => ls.filter(l => l.id !== id));
@@ -508,7 +509,7 @@ function TransactionForm({ mode, companies }) {
 // ── Movement History ──────────────────────────────────────────────────────────
 
 function MovementHistory({ companies }) {
-  const { showToast } = useToast();
+  const { toast } = useToast();
   const [companyId, setCompanyId] = useState('');
   const [data,      setData]      = useState(null);
   const [loading,   setLoading]   = useState(false);
@@ -522,11 +523,11 @@ function MovementHistory({ companies }) {
       setData(result);
       setPage(p);
     } catch (err) {
-      if (!isAuthError(err)) showToast(err.message, 'error');
+      if (!isAuthError(err)) toast.error(err.message);
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [toast]);
 
   useEffect(() => {
     if (companyId) load(companyId, 1);
@@ -556,7 +557,21 @@ function MovementHistory({ companies }) {
         )}
       </div>
 
-      {loading && <div className="loading-page" style={{ height: 180 }}><div className="spinner" /><span>Loading…</span></div>}
+      {loading && (
+        <div className="skeleton-table" style={{ marginTop: 16 }}>
+          <div className="skeleton-thead">
+            {[1, 2, 3, 4, 5].map(i => <div key={i} className="skeleton-bar" />)}
+          </div>
+          {[1, 2, 3, 4, 5].map(i => (
+            <div key={i} className="skeleton-row" style={{ opacity: 1 - i * 0.12 }}>
+              <div className="skeleton-bar" />
+              <div className="skeleton-bar" />
+              <div className="skeleton-bar" />
+              <div className="skeleton-bar" />
+            </div>
+          ))}
+        </div>
+      )}
 
       {!loading && !companyId && (
         <div className="db-empty" style={{ height: 180 }}>
@@ -619,21 +634,39 @@ function MovementHistory({ companies }) {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function StockTransactions() {
-  const { showToast } = useToast();
+  const { toast } = useToast();
   const [tab,       setTab]       = useState('in');
   const [companies, setCompanies] = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState('');
 
   useEffect(() => {
-    api.getCompanies()
+    cached(CACHE_COMPANIES, () => api.getCompanies())
       .then(rows => setCompanies(rows.filter(c => c.active !== false)))
       .catch(err => { if (!isAuthError(err)) setError(err.message); })
       .finally(() => setLoading(false));
-  }, [showToast]);
+  }, []);
 
-  if (loading) return <div className="loading-page"><div className="spinner" /><span>Loading…</span></div>;
-  if (error)   return <div className="db-empty" style={{ height: 300 }}><IconAlert size={ICON_LG} /><p>{error}</p></div>;
+  if (loading) return (
+    <div className="txn-page page-enter">
+      <div className="txn-tabs">
+        {['Stock In', 'Stock Out', 'Movement History'].map(label => (
+          <button key={label} className="txn-tab" disabled style={{ opacity: 0.4 }}>{label}</button>
+        ))}
+      </div>
+      <div className="txn-panel txn-panel-full" style={{ marginTop: 16 }}>
+        <div className="skeleton-table">
+          <div className="skeleton-thead">{[1,2,3,4].map(i=><div key={i} className="skeleton-bar"/>)}</div>
+          {[1,2,3].map(i=>(
+            <div key={i} className="skeleton-row" style={{opacity:1-i*0.15}}>
+              <div className="skeleton-bar"/><div className="skeleton-bar"/><div className="skeleton-bar"/>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+  if (error) return <div className="db-empty" style={{ height: 300 }}><IconAlert size={ICON_LG} /><p>{error}</p></div>;
 
   return (
     <div className="txn-page page-enter">
