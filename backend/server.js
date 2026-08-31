@@ -2,6 +2,7 @@ const config = require('./config');   // must load first — populates process.e
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
@@ -56,6 +57,11 @@ app.use(helmet({
   crossOriginOpenerPolicy: false,
 }));
 
+// ── Compression ──────────────────────────────────────────────
+// gzip/brotli every compressible response (JSON API payloads and the built
+// SPA's JS/CSS) — no correctness risk, and the default filter already skips
+// content that doesn't benefit (images, PDFs, already-compressed types).
+app.use(compression());
 
 // ── CORS ─────────────────────────────────────────────────────
 // Only mounted when the frontend lives on another origin. `credentials: true`

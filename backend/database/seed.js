@@ -5,7 +5,7 @@
  * Every step is idempotent, so re-running it will not duplicate rows.
  */
 require('../config');           // load .env before anything touches process.env
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt');
 const { query, initDB, closeDB } = require('./db');
 
 const DEFAULT_ADMIN = { username: 'admin', password: 'admin123' };

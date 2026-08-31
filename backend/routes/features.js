@@ -19,10 +19,11 @@
 const express = require('express');
 const { query } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
-const { requireAdmin, requireCompanyAccess } = require('../middleware/rbac');
+const { requireAdmin, requireCompanyAccess, featureCacheKey } = require('../middleware/rbac');
 const { asyncHandler } = require('../middleware/asyncHandler');
 const { ValidationError } = require('../lib/errors');
 const { FEATURES, isValidFeatureKey } = require('../lib/features');
+const cache = require('../lib/memoryCache');
 const v = require('../lib/validate');
 
 const router = express.Router();
@@ -88,6 +89,7 @@ router.post(
        ON CONFLICT (company_id, feature_key) DO NOTHING`,
       [companyId, key]
     );
+    cache.del(featureCacheKey(companyId, key));
     res.status(201).json({ message: `${FEATURES[key].label} enabled` });
   })
 );
@@ -104,6 +106,7 @@ router.delete(
       'DELETE FROM company_features WHERE company_id = $1 AND feature_key = $2',
       [companyId, key]
     );
+    cache.del(featureCacheKey(companyId, key));
     res.json({ message: `${FEATURES[key].label} disabled` });
   })
 );

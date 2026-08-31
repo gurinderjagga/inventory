@@ -89,3 +89,59 @@ test('a company can be archived and reactivated', async () => {
   const reactivated = await a.put(`/api/companies/${company.id}`, { name: company.name, active: true });
   assert.equal(reactivated.body.active, true);
 });
+
+/* ── Companies-list caching ───────────────────────────────────────────── */
+
+test('a newly created company appears in the list immediately, not after a cache TTL', async () => {
+  await a.post('/api/companies', { name: 'Warms The Cache' });
+  const created = await a.post('/api/companies', { name: 'Freshly Made Co' });
+  assert.equal(created.status, 201);
+
+  const list = await a.get('/api/companies');
+  assert.ok(list.body.some(c => c.name === 'Freshly Made Co'));
+});
+
+test('a rename is reflected in the list immediately, not after a cache TTL', async () => {
+  const company = await createCompany('Old Name Co');
+  await a.get('/api/companies'); // populate the cache
+
+  await a.put(`/api/companies/${company.id}`, { name: 'New Name Co' });
+
+  const list = await a.get('/api/companies');
+  assert.ok(list.body.some(c => c.name === 'New Name Co'));
+  assert.ok(!list.body.some(c => c.name === 'Old Name Co'));
+});
+
+test('a deleted company disappears from the list immediately, not after a cache TTL', async () => {
+  const company = await createCompany('Doomed Co');
+  await a.get('/api/companies'); // populate the cache
+
+  await a.del(`/api/companies/${company.id}`);
+
+  const list = await a.get('/api/companies');
+  assert.ok(!list.body.some(c => c.id === company.id));
+});
+
+/* ── Conditional GET (ETag / 304) ─────────────────────────────────────── */
+
+test('an unchanged companies list answers 304 to a matching If-None-Match', async () => {
+  await createCompany('Etag Co');
+  const first = await a.get('/api/companies');
+  const tag = first.headers.get('etag');
+  assert.ok(tag, 'expected an ETag header');
+
+  const second = await a.get('/api/companies', { 'If-None-Match': tag });
+  assert.equal(second.status, 304);
+  assert.equal(second.body, null, '304 must carry no body');
+});
+
+test('a changed companies list gets a fresh ETag and a full 200', async () => {
+  const first = await a.get('/api/companies');
+  const tag = first.headers.get('etag');
+
+  await a.post('/api/companies', { name: 'Changes The Etag Co' });
+
+  const second = await a.get('/api/companies', { 'If-None-Match': tag });
+  assert.equal(second.status, 200);
+  assert.notEqual(second.headers.get('etag'), tag);
+});

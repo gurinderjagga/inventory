@@ -25,27 +25,34 @@ async function authMiddlewareImpl(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired session — please log in again' });
   }
 
+  // One round trip instead of two: the company-id list is pulled via a LEFT
+  // JOIN + array_agg rather than a separate query gated on role. Harmless
+  // for an admin (the join just finds nothing to aggregate) and a genuine
+  // round-trip cut for every sub-admin request, which is every request that
+  // role ever makes.
   const { rows } = await query(
-    'SELECT id, username, role FROM users WHERE id = $1',
+    `SELECT u.id, u.username, u.role,
+            COALESCE(array_agg(uc.company_id) FILTER (WHERE uc.company_id IS NOT NULL), ARRAY[]::int[]) AS company_ids
+     FROM users u
+     LEFT JOIN user_companies uc ON uc.user_id = u.id
+     WHERE u.id = $1
+     GROUP BY u.id`,
     [payload.id]
   );
 
-  const user = rows[0];
-  if (!user) {
+  const row = rows[0];
+  if (!row) {
     // The account was deleted while the cookie was still valid.
     return res.status(401).json({ error: 'Your account no longer exists — please log in again' });
   }
 
   // An admin's access is implicit (every company), so companyIds is only
-  // loaded for a sub-admin — the one role whose access is actually a subset.
-  // Loaded here, once per request, so route handlers and requireCompanyAccess
-  // never need a second query to find out what a sub-admin can touch.
+  // attached for a sub-admin — the one role whose access is actually a
+  // subset — keeping req.user's shape exactly what it was before this query
+  // was merged into one.
+  const user = { id: row.id, username: row.username, role: row.role };
   if (user.role === 'sub_admin') {
-    const { rows: assigned } = await query(
-      'SELECT company_id FROM user_companies WHERE user_id = $1',
-      [user.id]
-    );
-    user.companyIds = assigned.map((r) => r.company_id);
+    user.companyIds = row.company_ids;
   }
 
   req.user = user;

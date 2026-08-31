@@ -4,6 +4,7 @@ const { authMiddleware } = require('../middleware/auth');
 const { requireCompanyAccess } = require('../middleware/rbac');
 const { asyncHandler } = require('../middleware/asyncHandler');
 const { NotFoundError, ConflictError } = require('../lib/errors');
+const { sendCached } = require('../lib/httpCache');
 const v = require('../lib/validate');
 const money = require('../lib/money');
 const { applyMovement } = require('../lib/stockLedger');
@@ -54,14 +55,27 @@ function readActive(body, current) {
   return body.active === undefined ? current : v.boolean(body.active, { fallback: current });
 }
 
-// GET /api/items/company/:companyId  — items scoped to a company
+// GET /api/items/company/:companyId  — items scoped to a company, paginated
+// like every other list endpoint (stock movements, invoices) — an
+// unbounded catalog was the one list left that could grow without limit.
 router.get('/company/:companyId', requireCompanyAccess(req => req.params.companyId), asyncHandler(async (req, res) => {
   const companyId = v.id(req.params.companyId, 'Company id');
-  const { rows } = await query(
-    'SELECT * FROM items WHERE company_id = $1 ORDER BY name ASC',
-    [companyId]
-  );
-  res.json(rows);
+  const page      = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit     = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
+  const offset    = (page - 1) * limit;
+
+  const [{ rows }, { rows: countRows }] = await Promise.all([
+    query(
+      'SELECT * FROM items WHERE company_id = $1 ORDER BY name ASC LIMIT $2 OFFSET $3',
+      [companyId, limit, offset]
+    ),
+    query('SELECT COUNT(*)::int AS total FROM items WHERE company_id = $1', [companyId]),
+  ]);
+
+  sendCached(req, res, {
+    items: rows, total: countRows[0].total, page, limit,
+    pages: Math.ceil(countRows[0].total / limit),
+  });
 }));
 
 // GET /api/items/:id
@@ -184,6 +198,9 @@ router.post('/:id/adjust', requireCompanyAccess(companyIdForItem), asyncHandler(
 }));
 
 // GET /api/items/:id/movements — the ledger for one item, newest first.
+// Capped rather than fully paginated: this feeds a history drill-down modal
+// with no page controls, so the fix for "unbounded and append-only forever"
+// is a sane limit, not a pagination UI this view doesn't have.
 router.get('/:id/movements', requireCompanyAccess(companyIdForItem), asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Item id');
   const { rows } = await query(
@@ -192,7 +209,8 @@ router.get('/:id/movements', requireCompanyAccess(companyIdForItem), asyncHandle
      LEFT JOIN users u ON u.id = m.user_id
      LEFT JOIN invoices inv ON inv.id = m.invoice_id
      WHERE m.item_id = $1
-     ORDER BY m.created_at DESC, m.id DESC`,
+     ORDER BY m.created_at DESC, m.id DESC
+     LIMIT 200`,
     [id]
   );
   res.json(rows);

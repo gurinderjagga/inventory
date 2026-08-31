@@ -162,6 +162,36 @@ test('finalizing allocates a real sequential number and deducts stock through th
   assert.equal(Number(movements[0].quantity_delta), -3);
 });
 
+test('two lines billing the same item both apply, netted into one stock update', async () => {
+  const company = await registeredCompany();
+  await enableInvoicing(company.id);
+  const item = await createItem(company.id, { quantity: 20, unit_price: 10 });
+
+  const draft = await a.post('/api/invoices', draftPayload(company.id, item, {
+    line_items: [
+      { item_id: item.id, quantity: 3, unit_price: 10 },
+      { item_id: item.id, quantity: 5, unit_price: 10 },
+    ],
+  }));
+  assert.equal(draft.status, 201);
+
+  const finalized = await a.post(`/api/invoices/${draft.body.id}/finalize`);
+  assert.equal(finalized.status, 200);
+  // Both lines' quantities must be deducted (3 + 5 = 8), not just one of them
+  // — a naive multi-row UPDATE keyed by item id would silently apply only
+  // the last matching line.
+  assert.equal(await stockOf(item.id), 12);
+
+  const { rows: movements } = await query(
+    'SELECT quantity_delta FROM stock_movements WHERE item_id = $1 AND reason = $2 ORDER BY id',
+    [item.id, 'invoice_finalize']
+  );
+  // One ledger row per line — audit granularity is unchanged even though the
+  // item-quantity update itself was netted into a single statement.
+  assert.equal(movements.length, 2);
+  assert.deepEqual(movements.map(m => Number(m.quantity_delta)).sort((a, b) => a - b), [-5, -3]);
+});
+
 test('invoice numbers are sequential per company', async () => {
   const company = await registeredCompany();
   await enableInvoicing(company.id);
@@ -359,4 +389,36 @@ test('the summary endpoint reports finalized revenue and draft count separately'
   assert.equal(res.body.total_invoices, 2);
   assert.equal(res.body.draft_count, 1);
   assert.equal(Number(res.body.finalized_revenue), 100);
+});
+
+/* ── requireFeature caching ───────────────────────────────────────────── */
+
+test('disabling invoicing takes effect immediately, not after a cache TTL', async () => {
+  const company = await registeredCompany();
+  await enableInvoicing(company.id);
+  const item = await createItem(company.id, { quantity: 10 });
+
+  // Populate requireFeature's cache for this company.
+  assert.equal((await a.get(`/api/invoices/company/${company.id}`)).status, 200);
+
+  // Disable through the real API, which must evict that cache entry.
+  const off = await a.del(`/api/features/company/${company.id}/invoicing`);
+  assert.equal(off.status, 200);
+
+  assert.equal((await a.get(`/api/invoices/company/${company.id}`)).status, 403);
+  const denied = await a.post('/api/invoices', draftPayload(company.id, item));
+  assert.equal(denied.status, 403);
+});
+
+test('re-enabling invoicing takes effect immediately after a prior denial was cached', async () => {
+  const company = await registeredCompany();
+
+  // Cache the "disabled" answer.
+  assert.equal((await a.get(`/api/invoices/company/${company.id}`)).status, 403);
+
+  // Enable through the real API — this must evict the cached denial.
+  const on = await a.post(`/api/features/company/${company.id}/invoicing`);
+  assert.equal(on.status, 201);
+
+  assert.equal((await a.get(`/api/invoices/company/${company.id}`)).status, 200);
 });

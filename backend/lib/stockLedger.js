@@ -64,4 +64,76 @@ async function applyMovement(client, { itemId, companyId, delta, reason, invoice
   return rows[0].quantity;
 }
 
-module.exports = { applyMovement };
+/**
+ * Bulk version of applyMovement, for the several-distinct-items-at-once case
+ * an invoice finalize/reverse is (the old code called applyMovement once per
+ * line — 2 round trips per line). A single client only ever runs one query
+ * at a time regardless of how it's awaited — `Promise.all` on one connection
+ * doesn't parallelize, node-postgres just queues it — so the only real win
+ * available inside a transaction is fewer statements, not concurrent ones.
+ *
+ * Two lines billing the SAME item are summed into a single net delta before
+ * the UPDATE: a multi-row `UPDATE ... FROM` only applies one matching source
+ * row per target row, so without this, one of two lines on the same item
+ * would silently have no effect on `items.quantity`. Each line still gets
+ * its own `stock_movements` row afterward — the audit granularity
+ * `applyMovement` always had is unchanged, only the item-quantity update is
+ * netted.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {Array<{itemId: number, companyId: number, delta: number|string, reason: string, invoiceId?: number, note?: string, userId?: number}>} entries
+ * @returns {Promise<void>}
+ * @throws {ConflictError} naming every item without enough stock, if any
+ */
+async function applyMovements(client, entries) {
+  const withDelta = entries
+    .map((e) => ({ ...e, qtyDelta: money.quantity(e.delta) }))
+    .filter((e) => !money.dec(e.qtyDelta).isZero());
+  if (withDelta.length === 0) return;
+
+  const netByItem = new Map(); // itemId -> Decimal, summed across every line on that item
+  for (const e of withDelta) {
+    netByItem.set(e.itemId, (netByItem.get(e.itemId) ?? money.dec(0)).plus(money.dec(e.qtyDelta)));
+  }
+  const itemIds   = [...netByItem.keys()];
+  const netDeltas = itemIds.map((id) => netByItem.get(id).toString());
+
+  const { rows: updated } = await client.query(
+    `UPDATE items
+     SET quantity = items.quantity + v.delta, updated_at = now()
+     FROM (SELECT * FROM unnest($1::int[], $2::numeric[]) AS t(item_id, delta)) AS v
+     WHERE items.id = v.item_id AND items.quantity + v.delta >= 0
+     RETURNING items.id`,
+    [itemIds, netDeltas]
+  );
+  const updatedIds = new Set(updated.map((r) => r.id));
+  const failedIds  = itemIds.filter((id) => !updatedIds.has(id));
+
+  if (failedIds.length > 0) {
+    const { rows: failedItems } = await client.query(
+      'SELECT id, name, quantity FROM items WHERE id = ANY($1)',
+      [failedIds]
+    );
+    const details = failedIds.map((id) => {
+      const item = failedItems.find((r) => r.id === id);
+      return `"${item?.name || 'unknown item'}" (available: ${item ? item.quantity : 0}, requested: ${netByItem.get(id).abs()})`;
+    });
+    throw new ConflictError(`Insufficient stock for ${details.join(', ')}`);
+  }
+
+  await client.query(
+    `INSERT INTO stock_movements (item_id, company_id, quantity_delta, reason, invoice_id, note, user_id)
+     SELECT * FROM unnest($1::int[], $2::int[], $3::numeric[], $4::text[], $5::int[], $6::text[], $7::int[])`,
+    [
+      withDelta.map((e) => e.itemId),
+      withDelta.map((e) => e.companyId),
+      withDelta.map((e) => e.qtyDelta),
+      withDelta.map((e) => e.reason),
+      withDelta.map((e) => e.invoiceId ?? null),
+      withDelta.map((e) => e.note ?? null),
+      withDelta.map((e) => e.userId ?? null),
+    ]
+  );
+}
+
+module.exports = { applyMovement, applyMovements };

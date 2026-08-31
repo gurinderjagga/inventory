@@ -80,8 +80,9 @@ export const api = {
   updateCompany: (id, d) => request('PUT', `/api/companies/${id}`, d),
   deleteCompany: (id) => request('DELETE', `/api/companies/${id}`),
 
-  // Items
-  getItems: (cid) => request('GET', `/api/items/company/${cid}`),
+  // Items — backend paginates (default 200/page); a max-size request keeps
+  // today's "load the whole catalog" behavior for any realistic catalog size.
+  getItems: (cid) => request('GET', `/api/items/company/${cid}?limit=500`).then(d => d.items),
   createItem: (d) => request('POST', '/api/items', d),
   updateItem: (id, d) => request('PUT', `/api/items/${id}`, d),
   deleteItem: (id) => request('DELETE', `/api/items/${id}`),

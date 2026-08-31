@@ -81,3 +81,29 @@ test('an item can be archived and reactivated', async () => {
   const untouched = await a.put(`/api/items/${item.id}`, { name: item.name, unit_price: item.unit_price });
   assert.equal(untouched.body.active, false, 'omitting active on edit must preserve it');
 });
+
+/* ── Pagination on the company items list ────────────────────────────── */
+
+test('the company items list is paginated like every other list endpoint', async () => {
+  await createItem(company.id, { name: 'Alpha', sku: 'ALPHA-1' });
+  await createItem(company.id, { name: 'Bravo', sku: 'BRAVO-1' });
+  await createItem(company.id, { name: 'Charlie', sku: 'CHARLIE-1' });
+
+  const res = await a.get(`/api/items/company/${company.id}?page=1&limit=2`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.items.length, 2);
+  assert.equal(res.body.total, 3);
+  assert.equal(res.body.pages, 2);
+  assert.deepEqual(res.body.items.map(i => i.name), ['Alpha', 'Bravo']);
+
+  const page2 = await a.get(`/api/items/company/${company.id}?page=2&limit=2`);
+  assert.deepEqual(page2.body.items.map(i => i.name), ['Charlie']);
+});
+
+test('the company items list defaults to a large enough page to cover a normal catalog', async () => {
+  for (let i = 0; i < 5; i++) await createItem(company.id, { name: `Item ${i}`, sku: `SKU-${i}` });
+
+  const res = await a.get(`/api/items/company/${company.id}`);
+  assert.equal(res.body.items.length, 5);
+  assert.equal(res.body.total, 5);
+});

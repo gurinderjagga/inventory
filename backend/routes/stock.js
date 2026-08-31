@@ -112,29 +112,29 @@ router.get('/movements', requireCompanyAccess(req => req.query.company_id), asyn
   const limit     = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
   const offset    = (page - 1) * limit;
 
-  const { rows } = await query(`
-    SELECT
-      m.id,
-      m.reason,
-      m.quantity_delta,
-      m.note,
-      m.created_at,
-      i.id          AS item_id,
-      i.name        AS item_name,
-      i.unit        AS item_unit,
-      u.username    AS performed_by
-    FROM stock_movements m
-    JOIN items i ON i.id = m.item_id
-    LEFT JOIN users u ON u.id = m.user_id
-    WHERE m.company_id = $1
-    ORDER BY m.created_at DESC, m.id DESC
-    LIMIT $2 OFFSET $3
-  `, [companyId, limit, offset]);
-
-  const { rows: countRows } = await query(
-    'SELECT COUNT(*)::int AS total FROM stock_movements WHERE company_id = $1',
-    [companyId]
-  );
+  // The page of rows and the total count don't depend on each other — run
+  // them concurrently rather than paying two sequential round trips.
+  const [{ rows }, { rows: countRows }] = await Promise.all([
+    query(`
+      SELECT
+        m.id,
+        m.reason,
+        m.quantity_delta,
+        m.note,
+        m.created_at,
+        i.id          AS item_id,
+        i.name        AS item_name,
+        i.unit        AS item_unit,
+        u.username    AS performed_by
+      FROM stock_movements m
+      JOIN items i ON i.id = m.item_id
+      LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.company_id = $1
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT $2 OFFSET $3
+    `, [companyId, limit, offset]),
+    query('SELECT COUNT(*)::int AS total FROM stock_movements WHERE company_id = $1', [companyId]),
+  ]);
 
   res.json({
     movements: rows,

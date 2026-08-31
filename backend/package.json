@@ -11,11 +11,13 @@
     "test:watch": "node --test --watch --test-concurrency=1 --require ./tests/helpers/env.js \"tests/**/*.test.js\""
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
+    "bcrypt": "^6.0.0",
+    "compression": "^1.8.1",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.6",
     "decimal.js": "^10.6.0",
     "dotenv": "^17.4.2",
+    "etag": "^1.8.1",
     "express": "^4.18.2",
     "express-rate-limit": "^8.7.0",
     "helmet": "^8.3.0",

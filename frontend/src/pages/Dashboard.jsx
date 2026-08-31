@@ -4,9 +4,9 @@ import { useNavigate } from 'react-router-dom';
 import { api, isAuthError } from '../api.js';
 import { cached, CACHE_COMPANIES } from '../lib/cache.js';
 import { listContainer, listItem } from '../lib/motion.js';
-import { formatDate } from '../lib/format.js';
+import { formatDate, formatCurrencyShort } from '../lib/format.js';
 import {
-  IconCompany, IconStock, IconStockIn, IconStockOut, IconTransactions,
+  IconCompany, IconStock, IconStockIn, IconStockOut, IconTransactions, IconInvoice,
   IconAlert, IconWarning,
   IconPlusCircle, IconChevron, IconRefresh, ICON_MD, ICON_LG,
 } from '../lib/icons.jsx';
@@ -124,7 +124,20 @@ export default function Dashboard() {
         ? await api.getStockMovements(firstCo.id, 1, 10)
         : { movements: [] };
 
-      setData({ companies, recent: movResult.movements || [], firstCo });
+      // Invoicing is opt-in per company (see the Companies "Features" toggle) —
+      // only fetch and show its stats when this company actually has it on,
+      // rather than a permanently-empty card for everyone else.
+      let invoiceStats = null;
+      if (firstCo) {
+        try {
+          const features = await api.getCompanyFeatures(firstCo.id);
+          if (features.includes('invoicing')) {
+            invoiceStats = await api.getInvoiceStats(firstCo.id);
+          }
+        } catch { /* not fatal to the rest of the dashboard */ }
+      }
+
+      setData({ companies, recent: movResult.movements || [], firstCo, invoiceStats });
     } catch (err) {
       if (!isAuthError(err)) setError(err.message);
     } finally {
@@ -148,7 +161,7 @@ export default function Dashboard() {
     </div>
   );
 
-  const { companies, recent, firstCo } = data;
+  const { companies, recent, firstCo, invoiceStats } = data;
   const totalLowStock = companies.reduce((s, c) => s + (c.low_stock_count || 0), 0);
   const totalItems    = companies.reduce((s, c) => s + (c.item_count    || 0), 0);
 
@@ -289,6 +302,32 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* Invoicing — only shown once the company has the feature turned on */}
+          {invoiceStats && (
+            <div className="db-card">
+              <div className="db-card-head">
+                <span className="db-card-title">Invoicing — {firstCo.name}</span>
+                <button type="button" className="db-link-btn" onClick={() => navigate(`/invoices?company=${firstCo.id}`)}>
+                  View all <IconChevron size={12} />
+                </button>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 4px 8px' }}>
+                <div>
+                  <div className="db-secondary" style={{ fontSize: 11 }}>Finalized Revenue</div>
+                  <div style={{ fontSize: 20, fontWeight: 600 }}>{formatCurrencyShort(invoiceStats.finalized_revenue)}</div>
+                </div>
+                <div>
+                  <div className="db-secondary" style={{ fontSize: 11 }}>Drafts</div>
+                  <div style={{ fontSize: 20, fontWeight: 600 }}>{invoiceStats.draft_count}</div>
+                </div>
+                <div>
+                  <div className="db-secondary" style={{ fontSize: 11 }}>Total</div>
+                  <div style={{ fontSize: 20, fontWeight: 600 }}>{invoiceStats.total_invoices}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Quick actions */}
           <div className="db-card db-actions-card">
             <div className="db-card-title" style={{ marginBottom: 14 }}>Quick Actions</div>
@@ -297,6 +336,7 @@ export default function Dashboard() {
                 { label: 'Stock In',       Icon: IconStockIn,      to: '/transactions' },
                 { label: 'Stock Out',      Icon: IconStockOut,     to: '/transactions' },
                 { label: 'Manage Stock',   Icon: IconStock,        to: '/stock'        },
+                { label: 'New Invoice',    Icon: IconInvoice,      to: '/invoices'     },
                 { label: 'Add Company',    Icon: IconCompany,      to: '/companies'    },
                 { label: 'View History',   Icon: IconTransactions, to: '/transactions' },
               ].map(a => (

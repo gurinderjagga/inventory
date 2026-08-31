@@ -58,8 +58,8 @@ function agent(defaultHeaders = {}) {
     }
   }
 
-  async function request(method, path, body) {
-    const headers = { 'Content-Type': 'application/json', ...defaultHeaders };
+  async function request(method, path, body, extraHeaders = {}) {
+    const headers = { 'Content-Type': 'application/json', ...defaultHeaders, ...extraHeaders };
     const cookies = cookieHeader();
     if (cookies) headers.Cookie = cookies;
 
@@ -78,7 +78,7 @@ function agent(defaultHeaders = {}) {
   }
 
   return {
-    get:  (p)    => request('GET', p),
+    get:  (p, h) => request('GET', p, undefined, h),
     post: (p, b) => request('POST', p, b),
     put:  (p, b) => request('PUT', p, b),
     del:  (p)    => request('DELETE', p),

@@ -1,7 +1,7 @@
 /**
  * tests/helpers/fixtures.js — the small amount of data most tests start from.
  */
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt');
 const { query } = require('../../database/db');
 
 const PASSWORD = 'admin123';

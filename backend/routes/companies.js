@@ -4,12 +4,60 @@ const { authMiddleware } = require('../middleware/auth');
 const { requireAdmin, requireCompanyAccess } = require('../middleware/rbac');
 const { asyncHandler } = require('../middleware/asyncHandler');
 const { NotFoundError, ConflictError, ValidationError } = require('../lib/errors');
+const cache = require('../lib/memoryCache');
+const { sendCached } = require('../lib/httpCache');
 const v = require('../lib/validate');
 
 const router = express.Router();
 router.use(authMiddleware);
 
 const SCHEMES = ['regular', 'composition'];
+
+// The companies list is the single most-hit endpoint in the app (the
+// frontend already client-caches it for this exact reason). Cached here
+// UNSCOPED — one shared entry serves every admin and every sub-admin, each
+// filtering it down in JS — rather than one cache entry per distinct scope,
+// which would mean a sub-admin with a different company set never hits the
+// same entry another sub-admin just populated.
+//
+// TTL only, no invalidation wired to item/stock writes: those live in
+// different route files (items.js, stock.js, invoices.js's finalize/reverse)
+// and the frontend already tolerates the same class of staleness on this
+// exact data (its own cache isn't invalidated by a stock movement either).
+// Company create/update/delete — right here, cheap to get right — do
+// invalidate immediately below.
+const COMPANIES_CACHE_KEY = 'companies:all';
+const COMPANIES_CACHE_TTL_MS = 15_000;
+
+async function getCompaniesWithStats() {
+  const cached = cache.get(COMPANIES_CACHE_KEY);
+  if (cached) return cached;
+
+  // COALESCE keeps the aggregates numeric for companies with no items,
+  // where SUM() would otherwise return NULL.
+  const { rows } = await query(`
+    SELECT
+      c.*,
+      COUNT(i.id)                                                            AS item_count,
+      COALESCE(SUM(CASE WHEN i.quantity <= i.low_stock_threshold THEN 1 ELSE 0 END), 0) AS low_stock_count,
+      COALESCE(SUM(i.quantity * i.unit_price), 0)                            AS stock_value
+    FROM companies c
+    LEFT JOIN items i ON i.company_id = c.id
+    GROUP BY c.id
+    ORDER BY c.name
+  `);
+
+  // COUNT/SUM over bigint come back as strings from pg; the client expects
+  // numbers for arithmetic and comparisons.
+  const mapped = rows.map(r => ({
+    ...r,
+    item_count:      Number(r.item_count),
+    low_stock_count: Number(r.low_stock_count),
+    stock_value:     Number(r.stock_value),
+  }));
+  cache.set(COMPANIES_CACHE_KEY, mapped, COMPANIES_CACHE_TTL_MS);
+  return mapped;
+}
 
 /** Read and validate the company payload shared by POST and PUT. */
 function readBody(body) {
@@ -40,31 +88,11 @@ function readActive(body, current) {
 // GET /api/companies  — all companies with item + low stock counts.
 // An admin sees every company; a sub-admin sees only the ones assigned to it.
 router.get('/', asyncHandler(async (req, res) => {
-  const scoped = req.user.role === 'sub_admin';
-
-  // COALESCE keeps the aggregates numeric for companies with no items,
-  // where SUM() would otherwise return NULL.
-  const { rows } = await query(`
-    SELECT
-      c.*,
-      COUNT(i.id)                                                            AS item_count,
-      COALESCE(SUM(CASE WHEN i.quantity <= i.low_stock_threshold THEN 1 ELSE 0 END), 0) AS low_stock_count,
-      COALESCE(SUM(i.quantity * i.unit_price), 0)                            AS stock_value
-    FROM companies c
-    LEFT JOIN items i ON i.company_id = c.id
-    ${scoped ? 'WHERE c.id = ANY($1)' : ''}
-    GROUP BY c.id
-    ORDER BY c.name
-  `, scoped ? [req.user.companyIds] : []);
-
-  // COUNT/SUM over bigint come back as strings from pg; the client expects
-  // numbers for arithmetic and comparisons.
-  res.json(rows.map(r => ({
-    ...r,
-    item_count:      Number(r.item_count),
-    low_stock_count: Number(r.low_stock_count),
-    stock_value:     Number(r.stock_value),
-  })));
+  const all = await getCompaniesWithStats();
+  const visible = req.user.role === 'sub_admin'
+    ? all.filter(c => req.user.companyIds.includes(c.id))
+    : all;
+  sendCached(req, res, visible);
 }));
 
 // GET /api/companies/:id
@@ -95,6 +123,7 @@ router.post('/', requireAdmin, asyncHandler(async (req, res) => {
        RETURNING *`,
       [c.name, c.email, c.phone, c.address, c.gstin, c.legalName, c.stateCode, c.pan, c.scheme, c.einvoiceEnabled, c.signatoryName]
     );
+    cache.del(COMPANIES_CACHE_KEY);
     res.status(201).json(rows[0]);
   } catch (err) {
     throwOnUniqueViolation(err);
@@ -122,6 +151,7 @@ router.put('/:id', requireCompanyAccess(req => req.params.id), asyncHandler(asyn
         c.scheme, c.einvoiceEnabled, active, c.signatoryName, id]
     );
     if (!rows[0]) throw new NotFoundError('Company not found');
+    cache.del(COMPANIES_CACHE_KEY);
     res.json(rows[0]);
   } catch (err) {
     throwOnUniqueViolation(err);
@@ -140,6 +170,7 @@ router.delete('/:id', requireAdmin, asyncHandler(async (req, res) => {
   await query('DELETE FROM invoice_number_series WHERE company_id = $1', [id]);
   await query('DELETE FROM invoices WHERE company_id = $1', [id]);
   await query('DELETE FROM companies WHERE id = $1', [id]);
+  cache.del(COMPANIES_CACHE_KEY);
   res.json({ message: 'Company deleted successfully' });
 }));
 

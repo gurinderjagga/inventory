@@ -30,7 +30,7 @@ const v = require('../lib/validate');
 const money = require('../lib/money');
 const gst = require('../lib/gst');
 const { formatAmount } = require('../lib/currency');
-const { applyMovement } = require('../lib/stockLedger');
+const { applyMovements } = require('../lib/stockLedger');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -179,6 +179,38 @@ async function allocateInvoiceNumber(client, companyId, documentType = DOCUMENT_
   return gst.formatInvoiceNumber(documentType, fy, rows[0].next_number);
 }
 
+/**
+ * Insert every line item in one multi-row statement instead of one INSERT
+ * per line — an invoice with N lines used to mean N sequential round trips
+ * just for this step.
+ */
+async function insertLineItems(client, invoiceId, lines, lineTaxes) {
+  if (lines.length === 0) return;
+  await client.query(
+    `INSERT INTO invoice_line_items
+       (invoice_id, item_id, item_name, quantity, unit_price, line_total,
+        hsn_sac_code, uqc, gst_rate, cgst_amount, sgst_amount, igst_amount)
+     SELECT $1, * FROM unnest(
+       $2::int[], $3::text[], $4::numeric[], $5::numeric[], $6::numeric[],
+       $7::text[], $8::text[], $9::numeric[], $10::numeric[], $11::numeric[], $12::numeric[]
+     )`,
+    [
+      invoiceId,
+      lines.map((l) => l.itemId),
+      lines.map((l) => l.itemName),
+      lines.map((l) => l.quantity),
+      lines.map((l) => l.unitPrice),
+      lines.map((l) => l.lineTotal),
+      lines.map((l) => l.hsnSacCode),
+      lines.map((l) => l.uqc),
+      lines.map((l) => l.gstRate),
+      lineTaxes.map((t) => t.cgst),
+      lineTaxes.map((t) => t.sgst),
+      lineTaxes.map((t) => t.igst),
+    ]
+  );
+}
+
 // ── GET /company/:companyId/summary — dashboard aggregate ───────────────────
 router.get('/company/:companyId/summary', ...gate(req => req.params.companyId), asyncHandler(async (req, res) => {
   const companyId = v.id(req.params.companyId, 'Company id');
@@ -200,16 +232,18 @@ router.get('/company/:companyId', ...gate(req => req.params.companyId), asyncHan
   const limit     = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
   const offset    = (page - 1) * limit;
 
-  const { rows } = await query(
-    `SELECT id, invoice_no, customer_name, subtotal, total, status, created_at
-     FROM invoices WHERE company_id = $1
-     ORDER BY created_at DESC, id DESC
-     LIMIT $2 OFFSET $3`,
-    [companyId, limit, offset]
-  );
-  const { rows: countRows } = await query(
-    'SELECT COUNT(*)::int AS total FROM invoices WHERE company_id = $1', [companyId]
-  );
+  // The page of rows and the total count don't depend on each other — run
+  // them concurrently rather than paying two sequential round trips.
+  const [{ rows }, { rows: countRows }] = await Promise.all([
+    query(
+      `SELECT id, invoice_no, customer_name, subtotal, total, status, created_at
+       FROM invoices WHERE company_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2 OFFSET $3`,
+      [companyId, limit, offset]
+    ),
+    query('SELECT COUNT(*)::int AS total FROM invoices WHERE company_id = $1', [companyId]),
+  ]);
 
   res.json({
     invoices: rows, total: countRows[0].total, page, limit,
@@ -273,18 +307,7 @@ router.post('/', ...gate(req => req.body.company_id), asyncHandler(async (req, r
       throw err;
     }
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const tax  = totals.lineTaxes[i];
-      await client.query(
-        `INSERT INTO invoice_line_items
-           (invoice_id, item_id, item_name, quantity, unit_price, line_total,
-            hsn_sac_code, uqc, gst_rate, cgst_amount, sgst_amount, igst_amount)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [invoice.id, line.itemId, line.itemName, line.quantity, line.unitPrice, line.lineTotal,
-          line.hsnSacCode, line.uqc, line.gstRate, tax.cgst, tax.sgst, tax.igst]
-      );
-    }
+    await insertLineItems(client, invoice.id, lines, totals.lineTaxes);
     return invoice;
   });
 
@@ -311,18 +334,7 @@ router.put('/:id', ...gate(companyIdForInvoice), asyncHandler(async (req, res) =
     const supplier = snapshotSupplier(company);
 
     await client.query('DELETE FROM invoice_line_items WHERE invoice_id = $1', [id]);
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const tax  = totals.lineTaxes[i];
-      await client.query(
-        `INSERT INTO invoice_line_items
-           (invoice_id, item_id, item_name, quantity, unit_price, line_total,
-            hsn_sac_code, uqc, gst_rate, cgst_amount, sgst_amount, igst_amount)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [id, line.itemId, line.itemName, line.quantity, line.unitPrice, line.lineTotal,
-          line.hsnSacCode, line.uqc, line.gstRate, tax.cgst, tax.sgst, tax.igst]
-      );
-    }
+    await insertLineItems(client, id, lines, totals.lineTaxes);
 
     const { rows: updatedRows } = await client.query(
       `UPDATE invoices SET
@@ -376,24 +388,29 @@ router.post('/:id/finalize', ...gate(companyIdForInvoice), asyncHandler(async (r
     const supplier = snapshotSupplier(company);
     const invoiceNo = await allocateInvoiceNumber(client, invoice.company_id);
 
-    for (let i = 0; i < lineRows.length; i++) {
-      const tax = totals.lineTaxes[i];
-      await client.query(
-        'UPDATE invoice_line_items SET cgst_amount=$1, sgst_amount=$2, igst_amount=$3 WHERE id=$4',
-        [tax.cgst, tax.sgst, tax.igst, lineRows[i].id]
-      );
-    }
+    // One multi-row UPDATE instead of one per line.
+    await client.query(
+      `UPDATE invoice_line_items AS li
+       SET cgst_amount = v.cgst, sgst_amount = v.sgst, igst_amount = v.igst
+       FROM (SELECT * FROM unnest($1::int[], $2::numeric[], $3::numeric[], $4::numeric[])
+             AS t(id, cgst, sgst, igst)) AS v
+       WHERE li.id = v.id`,
+      [
+        lineRows.map((r) => r.id),
+        totals.lineTaxes.map((t) => t.cgst),
+        totals.lineTaxes.map((t) => t.sgst),
+        totals.lineTaxes.map((t) => t.igst),
+      ]
+    );
 
     // Stock deduction and the invoice row update happen in the same
-    // transaction: if any line is short on stock, applyMovement throws and
+    // transaction: if any line is short on stock, applyMovements throws and
     // the whole finalize — numbering included — rolls back.
-    for (const line of lines) {
-      await applyMovement(client, {
-        itemId: line.itemId, companyId: invoice.company_id,
-        delta: money.dec(line.quantity).negated().toString(),
-        reason: 'invoice_finalize', invoiceId: id, userId: req.user.id,
-      });
-    }
+    await applyMovements(client, lines.map((line) => ({
+      itemId: line.itemId, companyId: invoice.company_id,
+      delta: money.dec(line.quantity).negated().toString(),
+      reason: 'invoice_finalize', invoiceId: id, userId: req.user.id,
+    })));
 
     const { rows: updatedRows } = await client.query(
       `UPDATE invoices SET
@@ -428,12 +445,10 @@ router.post('/:id/reverse', ...gate(companyIdForInvoice), asyncHandler(async (re
     const { rows: lineRows } = await client.query(
       'SELECT item_id, quantity FROM invoice_line_items WHERE invoice_id = $1', [id]
     );
-    for (const line of lineRows) {
-      await applyMovement(client, {
-        itemId: line.item_id, companyId: invoice.company_id,
-        delta: line.quantity, reason: 'invoice_reversal', invoiceId: id, userId: req.user.id,
-      });
-    }
+    await applyMovements(client, lineRows.map((line) => ({
+      itemId: line.item_id, companyId: invoice.company_id,
+      delta: line.quantity, reason: 'invoice_reversal', invoiceId: id, userId: req.user.id,
+    })));
 
     const { rows: updatedRows } = await client.query(
       `UPDATE invoices SET status='reversed', updated_at = now() WHERE id = $1 RETURNING *`, [id]

@@ -6,6 +6,7 @@
  */
 const { Client } = require('pg');
 const { pool, query, initDB, closeDB } = require('../../database/db');
+const memoryCache = require('../../lib/memoryCache');
 
 const TEST_SCHEMA = process.env.TEST_SCHEMA || '';
 
@@ -63,6 +64,10 @@ async function resetData() {
       invoice_number_series, invoice_line_items, invoices, items, companies, users
     RESTART IDENTITY CASCADE
   `);
+  // RESTART IDENTITY means the next test's company/user ids can collide with
+  // a previous test's — a cached "company 1 has invoicing on" would silently
+  // leak into a test where the new company 1 does not.
+  memoryCache.clear();
 }
 
 /** Tear down: drop the test schema and release the pool. */

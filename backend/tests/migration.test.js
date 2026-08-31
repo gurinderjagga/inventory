@@ -559,3 +559,34 @@ test('running the invoice-legal-fields migration again is a no-op', async () => 
   assert.deepEqual(await tableColumns('invoices'), first.invoices);
   assert.deepEqual(await tableColumns('invoice_line_items'), first.lineItems);
 });
+
+/* ── Phase 9: performance indexes ────────────────────────────────────────── */
+
+async function indexNames(table) {
+  const { rows } = await query(`
+    SELECT indexname FROM pg_indexes
+    WHERE schemaname = current_schema() AND tablename = $1
+  `, [table]);
+  return rows.map(r => r.indexname).sort();
+}
+
+test('the migration adds the invoice list and line-item lookup indexes', async () => {
+  await query('DROP INDEX IF EXISTS idx_invoices_company_created');
+  await query('DROP INDEX IF EXISTS idx_line_items_item');
+
+  await applySchemaUpdates();
+
+  assert.ok((await indexNames('invoices')).includes('idx_invoices_company_created'));
+  assert.ok((await indexNames('invoice_line_items')).includes('idx_line_items_item'));
+});
+
+test('running the performance-indexes migration again is a no-op', async () => {
+  await applySchemaUpdates();
+  const first = { invoices: await indexNames('invoices'), lineItems: await indexNames('invoice_line_items') };
+
+  await applySchemaUpdates();
+  await applySchemaUpdates();
+
+  assert.deepEqual(await indexNames('invoices'), first.invoices);
+  assert.deepEqual(await indexNames('invoice_line_items'), first.lineItems);
+});

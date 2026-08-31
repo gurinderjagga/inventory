@@ -7,7 +7,7 @@
  * role, assigning companies — is itself an admin-only privilege, gated below.
  */
 const express = require('express');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt');
 const { query, runTransaction, PG_UNIQUE_VIOLATION } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
 const { requireAdmin } = require('../middleware/rbac');

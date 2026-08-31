@@ -602,7 +602,7 @@ export default function Stock() {
                       <td className="num" style={{ color: Number(m.quantity_delta) < 0 ? 'var(--danger)' : 'var(--success)' }}>
                         {Number(m.quantity_delta) > 0 ? '+' : ''}{m.quantity_delta}
                       </td>
-                      <td className="cell-muted">{m.invoice_no || m.goods_receipt_supplier || '—'}</td>
+                      <td className="cell-muted">{m.invoice_no || '—'}</td>
                       <td className="cell-muted">{m.username || '—'}</td>
                     </tr>
                   ))}

@@ -10,7 +10,15 @@
 const { query } = require('../database/db');
 const { NotFoundError, ForbiddenError } = require('../lib/errors');
 const { FEATURES } = require('../lib/features');
+const cache = require('../lib/memoryCache');
 const { asyncHandler } = require('./asyncHandler');
+
+// Feature toggles only change when an admin deliberately flips one (see
+// routes/features.js, which evicts this same key immediately on write) — a
+// short TTL is just a safety net against a cache entry outliving a restart
+// or an eviction that got missed, not the primary freshness mechanism.
+const FEATURE_CACHE_TTL_MS = 30_000;
+const featureCacheKey = (companyId, key) => `feature:${companyId}:${key}`;
 
 /**
  * Gate a whole endpoint to admins only. Use this where the privilege itself —
@@ -61,11 +69,19 @@ function requireCompanyAccess(getCompanyId) {
 function requireFeature(key, getCompanyId) {
   return asyncHandler(async (req, res, next) => {
     const companyId = await getCompanyId(req);
-    const { rows } = await query(
-      'SELECT 1 FROM company_features WHERE company_id = $1 AND feature_key = $2',
-      [companyId, key]
-    );
-    if (!rows.length) {
+    const cacheKey  = featureCacheKey(companyId, key);
+
+    let enabled = cache.get(cacheKey);
+    if (enabled === undefined) {
+      const { rows } = await query(
+        'SELECT 1 FROM company_features WHERE company_id = $1 AND feature_key = $2',
+        [companyId, key]
+      );
+      enabled = rows.length > 0;
+      cache.set(cacheKey, enabled, FEATURE_CACHE_TTL_MS);
+    }
+
+    if (!enabled) {
       const label = FEATURES[key]?.label ?? key;
       throw new ForbiddenError(`${label} is not enabled for this company`);
     }
@@ -73,4 +89,4 @@ function requireFeature(key, getCompanyId) {
   });
 }
 
-module.exports = { requireAdmin, requireCompanyAccess, requireFeature };
+module.exports = { requireAdmin, requireCompanyAccess, requireFeature, featureCacheKey };
