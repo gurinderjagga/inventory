@@ -190,34 +190,9 @@ router.put('/:id', requireCompanyAccess(companyIdForItem), asyncHandler(async (r
   }
 }));
 
-// POST /api/items/:id/adjust — a manual stock correction. The only quantity
-// mutation that takes a raw new total rather than a computed delta, because
-// that is how a physical count is actually phrased ("it's really 47").
-router.post('/:id/adjust', requireCompanyAccess(companyIdForItem), asyncHandler(async (req, res) => {
-  const id          = v.id(req.params.id, 'Item id');
-  const newQuantity = money.quantity(v.nonNegativeNumber(req.body.quantity, 'Quantity'));
-  const reason      = v.requiredString(req.body.reason, 'Reason');
-
-  const updated = await runTransaction(async (client) => {
-    const { rows } = await client.query(
-      'SELECT company_id, quantity FROM items WHERE id = $1 FOR UPDATE',
-      [id]
-    );
-    const current = rows[0];
-    if (!current) throw new NotFoundError('Item not found');
-
-    const delta = money.dec(newQuantity).minus(money.dec(current.quantity));
-    await applyMovement(client, {
-      itemId: id, companyId: current.company_id, delta,
-      reason: 'manual_adjustment', note: reason, userId: req.user.id,
-    });
-
-    const { rows: after } = await client.query('SELECT * FROM items WHERE id = $1', [id]);
-    return after[0];
-  });
-
-  res.json(updated);
-}));
+// Stock quantity corrections now go through POST /api/stock/movements
+// (mode: 'count') — see routes/stock.js — so every quantity change, in/out/
+// correction alike, funnels through one endpoint with one lock strategy.
 
 // GET /api/items/:id/movements — the ledger for one item, newest first.
 // Capped rather than fully paginated: this feeds a history drill-down modal

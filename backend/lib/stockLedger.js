@@ -28,11 +28,12 @@ const { recomputeCompanyAggregates } = require('./companyAggregates');
  * @param {string} opts.reason             One of the stock_movements_reason_ck values.
  * @param {number} [opts.invoiceId]
  * @param {string} [opts.note]
+ * @param {string} [opts.referenceNo]      Structured reference — supplier bill #, job #, etc.
  * @param {number} [opts.userId]
  * @returns {Promise<string|null>} the item's new quantity, or null if delta was zero (no-op, no row written)
  * @throws {ConflictError} if the delta would take quantity below zero
  */
-async function applyMovement(client, { itemId, companyId, delta, reason, invoiceId, note, userId }) {
+async function applyMovement(client, { itemId, companyId, delta, reason, invoiceId, note, referenceNo, userId }) {
   const qtyDelta = money.quantity(delta);
   if (money.dec(qtyDelta).isZero()) return null;   // nothing changed, nothing to log
 
@@ -57,9 +58,9 @@ async function applyMovement(client, { itemId, companyId, delta, reason, invoice
 
   await client.query(
     `INSERT INTO stock_movements
-       (item_id, company_id, quantity_delta, reason, invoice_id, note, user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [itemId, companyId, qtyDelta, reason, invoiceId ?? null, note ?? null, userId ?? null]
+       (item_id, company_id, quantity_delta, reason, invoice_id, note, reference_no, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [itemId, companyId, qtyDelta, reason, invoiceId ?? null, note ?? null, referenceNo ?? null, userId ?? null]
   );
 
   // Every caller of applyMovement changes an item's quantity, which can

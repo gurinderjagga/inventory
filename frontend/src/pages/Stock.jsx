@@ -11,6 +11,7 @@ import Modal from '../components/Modal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Pagination, { usePagination } from '../components/Pagination.jsx';
+import StockMovementForm from '../components/StockMovementForm.jsx';
 import { useTableSort, SortableTh } from '../lib/useTableSort.jsx';
 import { IconAlert, IconBack, IconCheck, IconChevron, IconCompany, IconEdit, IconSearch, IconStock, IconAdjust, IconHistory, ICON_MD } from '../lib/icons.jsx';
 
@@ -41,6 +42,8 @@ const MOVEMENT_LABELS = {
   invoice_reversal:  'Invoice reversed',
   goods_received:    'Goods received',
   manual_adjustment: 'Manual adjustment',
+  stock_in:          'Stock In',
+  stock_out:         'Stock Out',
 };
 
 const UNITS = ['pcs', 'boxes', 'reams', 'kg', 'liters', 'sets', 'packs', 'rolls', 'pairs'];
@@ -84,7 +87,7 @@ export default function Stock() {
   const [confirm, setConfirm]     = useState(null);
   const [deleting, setDeleting]   = useState(false);
   const [pristine, setPristine]   = useState('');
-  const [adjust, setAdjust]       = useState(null);   // null | { item, quantity, reason, saving, err }
+  const [moveItem, setMoveItem]   = useState(null);   // null | item — drives the Stock Movement modal
   const [history, setHistory]     = useState(null);   // null | { item, loading, movements }
 
   // Which company's stock is on screen lives in the URL, not in useState.
@@ -201,26 +204,12 @@ export default function Stock() {
     } catch (e) { setFormErr(e.message); setSaving(false); }
   };
 
-  /* ── Adjust stock ───────────────────────────────────── */
-  const openAdjust = (item) => setAdjust({
-    item, quantity: String(item.quantity), reason: '', saving: false, err: '',
-  });
-  const closeAdjust = () => setAdjust(null);
-
-  const handleAdjust = async () => {
-    const qty = parseFloat(adjust.quantity);
-    if (isNaN(qty) || qty < 0) { setAdjust(a => ({ ...a, err: 'Quantity must be ≥ 0.' })); return; }
-    if (!adjust.reason.trim()) { setAdjust(a => ({ ...a, err: 'A reason is required.' })); return; }
-
-    setAdjust(a => ({ ...a, saving: true, err: '' }));
-    try {
-      await api.adjustItemQuantity(adjust.item.id, { quantity: qty, reason: adjust.reason.trim() });
-      toast.success(`"${adjust.item.name}" adjusted.`);
-      closeAdjust();
-      setRefreshKey(k => k + 1);
-    } catch (e) {
-      setAdjust(a => ({ ...a, saving: false, err: e.message }));
-    }
+  /* ── Modify stock (receive / dispatch / correct count) ─ */
+  const openMove  = (item) => setMoveItem(item);
+  const closeMove = () => setMoveItem(null);
+  const handleMoveDone = () => {
+    closeMove();
+    setRefreshKey(k => k + 1);
   };
 
   /* ── Movement history ─────────────────────────────────── */
@@ -452,8 +441,8 @@ export default function Stock() {
                                 title={`Edit ${item.name}`} aria-label={`Edit ${item.name}`}>
                           <IconEdit size={ICON_MD} />
                         </button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => openAdjust(item)}
-                                title={`Adjust stock for ${item.name}`} aria-label={`Adjust stock for ${item.name}`}>
+                        <button className="btn btn-secondary btn-sm" onClick={() => openMove(item)}
+                                title={`Modify stock for ${item.name}`} aria-label={`Modify stock for ${item.name}`}>
                           <IconAdjust size={ICON_MD} />
                         </button>
                         <button className="btn btn-secondary btn-sm" onClick={() => openHistory(item)}
@@ -542,37 +531,15 @@ export default function Stock() {
       </Modal>
 
 
-      {/* Adjust Stock modal */}
-      {adjust && (
-        <Modal isOpen={!!adjust} onClose={closeAdjust} title={`Adjust Stock: ${adjust.item.name}`}
-          onSubmit={handleAdjust}
-          footer={
-            <>
-              <button type="button" className="btn btn-secondary" onClick={closeAdjust}>Cancel</button>
-              <button className="btn btn-primary" disabled={adjust.saving}>
-                {adjust.saving
-                  ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</>
-                  : <><IconCheck size={ICON_MD} /> Adjust</>}
-              </button>
-            </>
-          }
-        >
-          <div className="form-group">
-            <label>New Quantity <span style={{ color: 'var(--danger)' }}>*</span></label>
-            <input type="number" min="0" step="0.01" autoFocus
-                   value={adjust.quantity}
-                   onChange={e => setAdjust(a => ({ ...a, quantity: e.target.value }))} />
-            <small style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4, display: 'block' }}>
-              Currently {adjust.item.quantity}
-            </small>
-          </div>
-          <div className="form-group">
-            <label>Reason <span style={{ color: 'var(--danger)' }}>*</span></label>
-            <input type="text" placeholder="e.g. Physical count correction, damaged stock…"
-                   value={adjust.reason}
-                   onChange={e => setAdjust(a => ({ ...a, reason: e.target.value }))} />
-          </div>
-          {adjust.err && <div className="login-error"><IconAlert size={ICON_MD} /><span>{adjust.err}</span></div>}
+      {/* Modify Stock modal — receive / dispatch / correct count, one form */}
+      {moveItem && (
+        <Modal isOpen={!!moveItem} onClose={closeMove} title={`Modify Stock: ${moveItem.name}`}>
+          <StockMovementForm
+            lockedCompanyId={selected.id}
+            lockedItem={moveItem}
+            onCancel={closeMove}
+            onDone={handleMoveDone}
+          />
         </Modal>
       )}
 
@@ -602,7 +569,7 @@ export default function Stock() {
                       <td className="num" style={{ color: Number(m.quantity_delta) < 0 ? 'var(--danger)' : 'var(--success)' }}>
                         {Number(m.quantity_delta) > 0 ? '+' : ''}{m.quantity_delta}
                       </td>
-                      <td className="cell-muted">{m.invoice_no || '—'}</td>
+                      <td className="cell-muted">{m.invoice_no || m.reference_no || '—'}</td>
                       <td className="cell-muted">{m.username || '—'}</td>
                     </tr>
                   ))}

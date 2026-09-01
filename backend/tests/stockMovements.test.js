@@ -29,6 +29,15 @@ async function movementsOf(itemId) {
   return res.body;
 }
 
+// Thin wrappers around the one movement endpoint — every test below reads as
+// "stock in/out/adjust" even though it's all POST /api/stock/movements now.
+const stockIn    = (itemId, quantity, referenceNo = 'PO-1') =>
+  a.post('/api/stock/movements', { company_id: company.id, item_id: itemId, mode: 'in', quantity, reference_no: referenceNo });
+const stockOut   = (itemId, quantity, referenceNo = 'JOB-1') =>
+  a.post('/api/stock/movements', { company_id: company.id, item_id: itemId, mode: 'out', quantity, reference_no: referenceNo });
+const adjustTo   = (itemId, quantity, note) =>
+  a.post('/api/stock/movements', { company_id: company.id, item_id: itemId, mode: 'count', quantity, note });
+
 /* ── initial_stock ────────────────────────────────────────────────────── */
 
 test('creating an item with a starting quantity logs an initial_stock movement', async () => {
@@ -64,9 +73,9 @@ test('editing an item cannot change its quantity', async () => {
 
 /* ── stock in / out ──────────────────────────────────────────────────── */
 
-test('stock/out deducts quantity and logs a stock_out movement', async () => {
+test('mode "out" deducts quantity and logs a stock_out movement', async () => {
   const item = await createItem(company.id, { quantity: 10 });
-  const res = await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 2 });
+  const res = await stockOut(item.id, 2);
 
   assert.equal(res.status, 201);
   assert.equal(await stockOf(item.id), 8);
@@ -75,21 +84,22 @@ test('stock/out deducts quantity and logs a stock_out movement', async () => {
   assert.equal(movements.length, 1);
   assert.equal(movements[0].reason, 'stock_out');
   assert.equal(Number(movements[0].quantity_delta), -2);
+  assert.equal(movements[0].reference_no, 'JOB-1');
 });
 
 test('insufficient stock is still refused with the same message shape', async () => {
   const item = await createItem(company.id, { quantity: 1 });
 
-  const res = await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 5 });
+  const res = await stockOut(item.id, 5);
   assert.equal(res.status, 409);
   assert.match(res.body.error, /Insufficient stock/i);
   assert.equal(await stockOf(item.id), 1);
   assert.deepEqual(await movementsOf(item.id), [], 'a refused dispatch must log nothing');
 });
 
-test('stock/in adds quantity and logs a stock_in movement', async () => {
+test('mode "in" adds quantity and logs a stock_in movement', async () => {
   const item = await createItem(company.id, { quantity: 10 });
-  const res = await a.post('/api/stock/in', { company_id: company.id, item_id: item.id, quantity: 5 });
+  const res = await stockIn(item.id, 5);
 
   assert.equal(res.status, 201);
   assert.equal(await stockOf(item.id), 15);
@@ -98,24 +108,30 @@ test('stock/in adds quantity and logs a stock_in movement', async () => {
   assert.equal(movements.length, 1);
   assert.equal(movements[0].reason, 'stock_in');
   assert.equal(Number(movements[0].quantity_delta), 5);
+  assert.equal(movements[0].reference_no, 'PO-1');
 });
 
-/* ── manual adjustment ────────────────────────────────────────────────── */
-
-test('a manual adjustment requires a reason', async () => {
+test('stock in/out without a reference number is refused', async () => {
   const item = await createItem(company.id, { quantity: 10 });
-  const res = await a.post(`/api/items/${item.id}/adjust`, { quantity: 8 });
+  const res = await a.post('/api/stock/movements', { company_id: company.id, item_id: item.id, mode: 'in', quantity: 5 });
   assert.equal(res.status, 400);
   assert.equal(await stockOf(item.id), 10);
 });
 
-test('a manual adjustment sets the new quantity and logs the reason as a note', async () => {
+/* ── manual adjustment (mode "count") ─────────────────────────────────── */
+
+test('a count correction requires a note', async () => {
   const item = await createItem(company.id, { quantity: 10 });
-  const res = await a.post(`/api/items/${item.id}/adjust`, {
-    quantity: 7, reason: 'Physical count found 3 damaged units',
-  });
-  assert.equal(res.status, 200);
-  assert.equal(res.body.quantity, 7);
+  const res = await adjustTo(item.id, 8, undefined);
+  assert.equal(res.status, 400);
+  assert.equal(await stockOf(item.id), 10);
+});
+
+test('a count correction sets the new quantity and logs the note as the reason', async () => {
+  const item = await createItem(company.id, { quantity: 10 });
+  const res = await adjustTo(item.id, 7, 'Physical count found 3 damaged units');
+  assert.equal(res.status, 201);
+  assert.equal(res.body.new_quantity, 7);
 
   const movements = await movementsOf(item.id);
   assert.equal(movements.length, 1);
@@ -124,14 +140,14 @@ test('a manual adjustment sets the new quantity and logs the reason as a note', 
   assert.equal(movements[0].note, 'Physical count found 3 damaged units');
 });
 
-test('adjusting to the same quantity is a no-op, not an error', async () => {
+test('correcting to the same quantity is a no-op, not an error', async () => {
   const item = await createItem(company.id, { quantity: 10 });
-  const res = await a.post(`/api/items/${item.id}/adjust`, { quantity: 10, reason: 'Recount, no change' });
-  assert.equal(res.status, 200);
+  const res = await adjustTo(item.id, 10, 'Recount, no change');
+  assert.equal(res.status, 201);
   assert.deepEqual(await movementsOf(item.id), []);
 });
 
-test('an adjustment racing a stock dispatch does not corrupt stock', async () => {
+test('a count correction racing a stock dispatch does not corrupt stock', async () => {
   // Created through the API, not the fixture, so its starting quantity is
   // itself a ledger row — otherwise the assertion below (quantity == sum of
   // movements) would be off by the fixture's untracked baseline.
@@ -140,21 +156,22 @@ test('an adjustment racing a stock dispatch does not corrupt stock', async () =>
 
   const blocker = await lockItemRow(item.id);
   try {
-    const dispatch = a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 2 });
+    const dispatch = stockOut(item.id, 2);
     await waitForBlockedBackends(1);
 
-    const adjust = a.post(`/api/items/${item.id}/adjust`, { quantity: 20, reason: 'Recount' });
+    const adjust = adjustTo(item.id, 20, 'Recount');
     await waitForBlockedBackends(2);
 
     await blocker.release();
 
     const [dispatchRes, adjustRes] = await Promise.all([dispatch, adjust]);
     assert.equal(dispatchRes.status, 201);
-    assert.equal(adjustRes.status, 200);
+    assert.equal(adjustRes.status, 201);
 
     // Whichever order they actually applied in, the ledger and the cached
     // quantity must agree — that is the whole point of doing both inside
-    // applyMovement's single UPDATE.
+    // applyMovement's single UPDATE, under the same row lock this route now
+    // takes for every mode.
     const { rows } = await query('SELECT quantity FROM items WHERE id = $1', [item.id]);
     const { rows: sum } = await query(
       'SELECT COALESCE(SUM(quantity_delta), 0) AS total FROM stock_movements WHERE item_id = $1',
@@ -182,7 +199,7 @@ test('an item with only solo movement history can be deleted', async () => {
 test('the first page needs no cursor and reports a nextCursor when there is more', async () => {
   const item = await createItem(company.id, { quantity: 100 });
   for (let i = 0; i < 5; i++) {
-    await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 1 });
+    await stockOut(item.id, 1);
   }
 
   const res = await a.get(`/api/stock/movements?company_id=${company.id}&limit=2`);
@@ -196,7 +213,7 @@ test('following nextCursor walks the full history exactly once each, newest firs
   const item = await createItem(company.id, { quantity: 100 });
   // Five distinct, orderable movements.
   for (let i = 1; i <= 5; i++) {
-    await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: i });
+    await stockOut(item.id, i);
   }
 
   const seen = [];
@@ -246,8 +263,8 @@ test('rows sharing the exact same created_at (a bulk insert) are not skipped acr
 
 test('the last page has no nextCursor', async () => {
   const item = await createItem(company.id, { quantity: 100 });
-  await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 1 });
-  await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 1 });
+  await stockOut(item.id, 1);
+  await stockOut(item.id, 1);
 
   const res = await a.get(`/api/stock/movements?company_id=${company.id}&limit=10`);
   assert.equal(res.body.movements.length, 2);

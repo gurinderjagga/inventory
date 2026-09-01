@@ -281,6 +281,7 @@ async function applySchemaUpdates() {
   await addPerformanceIndexes();
   await addCompanyAggregateColumns();
   await addInvoiceIdempotencyKey();
+  await addStockMovementReference();
 }
 
 /**
@@ -755,6 +756,25 @@ async function addInvoiceIdempotencyKey() {
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_company_idempotency_key
       ON invoices(company_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+  `);
+}
+
+/**
+ * A structured reference for a stock movement — a supplier's bill number, a
+ * workshop job number, a customer's own delivery challan — as distinct from
+ * `note`, which is free-text description. Stock in/out/correction all funnel
+ * through one endpoint now (routes/stock.js POST /movements); this is what
+ * makes "find everything against bill #1234" a real lookup instead of a text
+ * search over notes.
+ */
+async function addStockMovementReference() {
+  await pool.query(`
+    ALTER TABLE stock_movements
+      ADD COLUMN IF NOT EXISTS reference_no TEXT
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_stock_movements_reference
+      ON stock_movements(company_id, reference_no) WHERE reference_no IS NOT NULL
   `);
 }
 

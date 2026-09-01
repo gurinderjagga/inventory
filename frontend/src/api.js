@@ -86,13 +86,11 @@ export const api = {
   createItem: (d) => request('POST', '/api/items', d),
   updateItem: (id, d) => request('PUT', `/api/items/${id}`, d),
   deleteItem: (id) => request('DELETE', `/api/items/${id}`),
-  adjustItemQuantity: (id, d) => request('POST', `/api/items/${id}/adjust`, d),
   getItemMovements: (id) => request('GET', `/api/items/${id}/movements`),
 
-
-  // Stock transactions
-  stockIn:           (d) => request('POST', '/api/stock/in', d),
-  stockOut:          (d) => request('POST', '/api/stock/out', d),
+  // Stock movements — the one endpoint for receiving, dispatching, or
+  // correcting a count. `d.mode` is 'in' | 'out' | 'count'.
+  recordStockMovement: (d) => request('POST', '/api/stock/movements', d),
   // Keyset pagination: omit `cursor` for the first page; pass the previous
   // response's `nextCursor` to continue forward. See backend/lib/keysetCursor.js.
   getStockMovements: (companyId, cursor = null, limit = 50) =>

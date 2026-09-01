@@ -124,10 +124,10 @@ test('stock in / stock out track stock_value through the ledger', async () => {
   });
   const item = created.body;
 
-  await a.post('/api/stock/in', { company_id: company.id, item_id: item.id, quantity: 5 });
+  await a.post('/api/stock/movements', { company_id: company.id, item_id: item.id, mode: 'in', quantity: 5, reference_no: 'PO-1' });
   assert.equal(Number((await companyRow()).stock_value), 150, '15 units * 10');
 
-  await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 8 });
+  await a.post('/api/stock/movements', { company_id: company.id, item_id: item.id, mode: 'out', quantity: 8, reference_no: 'JOB-1' });
   assert.equal(Number((await companyRow()).stock_value), 70, '7 units * 10');
 });
 
@@ -135,7 +135,7 @@ test('a manual adjustment updates the aggregates like any other quantity change'
   const created = await a.post('/api/items', {
     company_id: company.id, name: 'Widget', unit_price: 10, quantity: 10, low_stock_threshold: 5,
   });
-  await a.post(`/api/items/${created.body.id}/adjust`, { quantity: 2, reason: 'Physical count' });
+  await a.post('/api/stock/movements', { company_id: company.id, item_id: created.body.id, mode: 'count', quantity: 2, note: 'Physical count' });
 
   const c = await companyRow();
   assert.equal(Number(c.stock_value), 20);
@@ -197,10 +197,10 @@ test('a long sequence of mutations never drifts from a live recompute of the tru
   });
   await assertMatchesGroundTruth();
 
-  await a.post('/api/stock/in', { company_id: company.id, item_id: one.body.id, quantity: 5 });
-  await a.post('/api/stock/out', { company_id: company.id, item_id: two.body.id, quantity: 1 });
+  await a.post('/api/stock/movements', { company_id: company.id, item_id: one.body.id, mode: 'in', quantity: 5, reference_no: 'PO-1' });
+  await a.post('/api/stock/movements', { company_id: company.id, item_id: two.body.id, mode: 'out', quantity: 1, reference_no: 'JOB-1' });
   await a.put(`/api/items/${one.body.id}`, { name: 'One', unit_price: 15, low_stock_threshold: 5 });
-  await a.post(`/api/items/${two.body.id}/adjust`, { quantity: 0, reason: 'Sold out' });
+  await a.post('/api/stock/movements', { company_id: company.id, item_id: two.body.id, mode: 'count', quantity: 0, note: 'Sold out' });
   await assertMatchesGroundTruth();
 
   const three = await a.post('/api/items', { company_id: company.id, name: 'Three', unit_price: 50, quantity: 1, low_stock_threshold: 10 });

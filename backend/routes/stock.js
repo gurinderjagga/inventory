@@ -1,18 +1,20 @@
 /**
  * routes/stock.js
  *
- * Simple stock movement endpoints replacing the invoicing workflow.
- *
- *   POST /api/stock/in          — receive stock for an item
- *   POST /api/stock/out         — dispatch stock from an item
+ *   POST /api/stock/movements   — the one way to change an item's quantity
+ *                                 by hand: receive, dispatch, or correct a count
  *   GET  /api/stock/movements   — paginated movement history for a company
+ *
+ * A GST invoice is a different kind of document (numbered, legally filed) and
+ * moves stock through routes/invoices.js finalize/reverse instead — see the
+ * comment on MODES below for how the two relate.
  */
 const express = require('express');
 const { query, runTransaction } = require('../database/db');
 const { authMiddleware } = require('../middleware/auth');
 const { requireCompanyAccess } = require('../middleware/rbac');
 const { asyncHandler } = require('../middleware/asyncHandler');
-const { NotFoundError, ConflictError, ValidationError } = require('../lib/errors');
+const { NotFoundError, ValidationError } = require('../lib/errors');
 const v = require('../lib/validate');
 const money = require('../lib/money');
 const { applyMovement } = require('../lib/stockLedger');
@@ -21,86 +23,74 @@ const { encodeCursor, decodeCursor } = require('../lib/keysetCursor');
 const router = express.Router();
 router.use(authMiddleware);
 
-// ── POST /api/stock/in ───────────────────────────────────────────────────────
-// Receive stock: increase an item's quantity and log a 'stock_in' movement.
-router.post('/in', requireCompanyAccess(req => req.body.company_id), asyncHandler(async (req, res) => {
+// mode -> stock_movements.reason, and whether `quantity` is a delta (how much
+// moved) or an absolute target (what the shelf actually holds).
+const MODES = {
+  in:    { reason: 'stock_in',          absolute: false },
+  out:   { reason: 'stock_out',         absolute: false },
+  count: { reason: 'manual_adjustment', absolute: true  },
+};
+
+// ── POST /api/stock/movements ────────────────────────────────────────────────
+router.post('/movements', requireCompanyAccess(req => req.body.company_id), asyncHandler(async (req, res) => {
   const companyId = v.id(req.body.company_id, 'company_id');
   const itemId    = v.id(req.body.item_id, 'item_id');
-  const quantity  = money.quantity(v.nonNegativeNumber(req.body.quantity, 'Quantity'));
-  const note      = v.optionalString(req.body.note);
+  const mode      = MODES[req.body.mode];
+  if (!mode) throw new ValidationError('mode must be "in", "out", or "count"');
 
-  if (money.dec(quantity).isZero()) {
+  const note        = v.optionalString(req.body.note);
+  const referenceNo = v.optionalString(req.body.reference_no);
+  // In/out are real movements of physical goods — a supplier bill, a job
+  // slip, a customer's own challan — that reference is what makes the ledger
+  // searchable later, so it isn't optional the way a passing note is. A count
+  // correction has no such document; it's `note` that carries the reason
+  // there (validated below), not a reference.
+  if (!mode.absolute && !referenceNo) {
+    throw new ValidationError('Reference number is required for stock in/out');
+  }
+  if (mode.absolute && !note) {
+    throw new ValidationError('A note explaining the correction is required');
+  }
+
+  const quantity = money.quantity(v.nonNegativeNumber(req.body.quantity, 'Quantity'));
+  if (!mode.absolute && money.dec(quantity).isZero()) {
     throw new ValidationError('Quantity must be greater than zero');
   }
 
-  // Verify item belongs to the given company.
-  const { rows: items } = await query(
-    'SELECT id, name FROM items WHERE id = $1 AND company_id = $2',
-    [itemId, companyId]
-  );
-  if (!items[0]) throw new NotFoundError('Item not found for this company');
-
-  const newQuantity = await runTransaction(async (client) => {
-    return applyMovement(client, {
-      itemId, companyId,
-      delta:  quantity,
-      reason: 'stock_in',
-      note,
-      userId: req.user.id,
-    });
-  });
-
-  res.status(201).json({
-    message:      'Stock received',
-    item_id:      itemId,
-    item_name:    items[0].name,
-    quantity_added: Number(quantity),
-    new_quantity: newQuantity,
-  });
-}));
-
-// ── POST /api/stock/out ──────────────────────────────────────────────────────
-// Dispatch stock: decrease an item's quantity and log a 'stock_out' movement.
-router.post('/out', requireCompanyAccess(req => req.body.company_id), asyncHandler(async (req, res) => {
-  const companyId = v.id(req.body.company_id, 'company_id');
-  const itemId    = v.id(req.body.item_id, 'item_id');
-  const quantity  = money.quantity(v.nonNegativeNumber(req.body.quantity, 'Quantity'));
-  const note      = v.optionalString(req.body.note);
-
-  if (money.dec(quantity).isZero()) {
-    throw new ValidationError('Quantity must be greater than zero');
-  }
-
-  const newQuantity = await runTransaction(async (client) => {
-    // Lock the row to prevent races between concurrent dispatches.
+  const result = await runTransaction(async (client) => {
+    // Locked here (not left to applyMovement's own atomic UPDATE) because
+    // count mode needs to read the current quantity before it can compute a
+    // delta — the lock has to cover that read-then-decide, not just the
+    // write. Applied uniformly to in/out too, both for one code path and
+    // because it also re-confirms the item actually belongs to this
+    // company (requireCompanyAccess only checked the caller can reach
+    // company_id, not that item_id is really one of its items).
     const { rows } = await client.query(
-      'SELECT id, name, quantity FROM items WHERE id = $1 AND company_id = $2 FOR UPDATE',
+      'SELECT quantity FROM items WHERE id = $1 AND company_id = $2 FOR UPDATE',
       [itemId, companyId]
     );
     if (!rows[0]) throw new NotFoundError('Item not found for this company');
 
-    const current = money.dec(rows[0].quantity);
-    if (current.lt(money.dec(quantity))) {
-      throw new ConflictError(
-        `Insufficient stock — only ${current.toFixed(3)} units available, ` +
-        `but ${money.dec(quantity).toFixed(3)} requested`
-      );
-    }
+    const delta = mode.absolute
+      ? money.dec(quantity).minus(money.dec(rows[0].quantity))
+      : req.body.mode === 'out' ? money.dec(quantity).negated() : money.dec(quantity);
 
-    return applyMovement(client, {
-      itemId, companyId,
-      delta:  money.dec(quantity).negated().toString(),
-      reason: 'stock_out',
-      note,
+    await applyMovement(client, {
+      itemId, companyId, delta,
+      reason: mode.reason,
+      note, referenceNo,
       userId: req.user.id,
     });
+
+    const { rows: after } = await client.query('SELECT quantity FROM items WHERE id = $1', [itemId]);
+    return { newQuantity: after[0].quantity, delta: delta.toString() };
   });
 
   res.status(201).json({
-    message:         'Stock dispatched',
-    item_id:         itemId,
-    quantity_removed: Number(quantity),
-    new_quantity:    newQuantity,
+    item_id:        itemId,
+    mode:           req.body.mode,
+    quantity_delta: Number(result.delta),
+    new_quantity:   result.newQuantity,
   });
 }));
 
@@ -137,6 +127,7 @@ router.get('/movements', requireCompanyAccess(req => req.query.company_id), asyn
         m.reason,
         m.quantity_delta,
         m.note,
+        m.reference_no,
         m.created_at,
         to_char(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_precise,
         i.id          AS item_id,
