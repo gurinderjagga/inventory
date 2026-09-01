@@ -17,6 +17,7 @@
  */
 const { ConflictError } = require('./errors');
 const money = require('./money');
+const { recomputeCompanyAggregates } = require('./companyAggregates');
 
 /**
  * @param {import('pg').PoolClient} client  Must be inside a transaction.
@@ -61,6 +62,12 @@ async function applyMovement(client, { itemId, companyId, delta, reason, invoice
     [itemId, companyId, qtyDelta, reason, invoiceId ?? null, note ?? null, userId ?? null]
   );
 
+  // Every caller of applyMovement changes an item's quantity, which can
+  // change whether it counts as low-stock and always changes its
+  // contribution to stock_value — see lib/companyAggregates.js for why this
+  // is a recompute, not an increment.
+  await recomputeCompanyAggregates(client, companyId);
+
   return rows[0].quantity;
 }
 
@@ -95,7 +102,14 @@ async function applyMovements(client, entries) {
   for (const e of withDelta) {
     netByItem.set(e.itemId, (netByItem.get(e.itemId) ?? money.dec(0)).plus(money.dec(e.qtyDelta)));
   }
-  const itemIds   = [...netByItem.keys()];
+
+  // Sorted ascending by item id — not for the query's benefit, but so every
+  // caller acquires row locks in the same order regardless of what order
+  // line items happened to appear in the client's request. Two invoices
+  // billing items [5, 12] in opposite order would otherwise each hold the
+  // lock the other is waiting for: the textbook precondition for a Postgres
+  // deadlock (40P01). A consistent order removes the circular wait entirely.
+  const itemIds   = [...netByItem.keys()].sort((a, b) => a - b);
   const netDeltas = itemIds.map((id) => netByItem.get(id).toString());
 
   const { rows: updated } = await client.query(
@@ -134,6 +148,14 @@ async function applyMovements(client, entries) {
       withDelta.map((e) => e.userId ?? null),
     ]
   );
+
+  // One invoice's line items are all the same company in practice, but this
+  // stays correct even if that ever isn't true — one recompute per distinct
+  // company touched, not one per line.
+  const companyIds = [...new Set(withDelta.map((e) => e.companyId))];
+  for (const companyId of companyIds) {
+    await recomputeCompanyAggregates(client, companyId);
+  }
 }
 
 module.exports = { applyMovement, applyMovements };

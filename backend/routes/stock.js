@@ -16,6 +16,7 @@ const { NotFoundError, ConflictError, ValidationError } = require('../lib/errors
 const v = require('../lib/validate');
 const money = require('../lib/money');
 const { applyMovement } = require('../lib/stockLedger');
+const { encodeCursor, decodeCursor } = require('../lib/keysetCursor');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -104,16 +105,31 @@ router.post('/out', requireCompanyAccess(req => req.body.company_id), asyncHandl
 }));
 
 // ── GET /api/stock/movements ─────────────────────────────────────────────────
-// Paginated movement history for a company, newest first.
-// Query params: company_id (required), page (default 1), limit (default 50)
+// Movement history for a company, newest first — keyset (seek) pagination,
+// not OFFSET: stock_movements is append-only, so a fixed "page 50" would get
+// slower every month on its own as the ledger grows, purely from Postgres
+// having to walk and discard every row ahead of an OFFSET window. A cursor
+// (opaque; see lib/keysetCursor.js) instead names exactly where the last
+// page ended, so the next one is an index seek — cost proportional to page
+// size, not to how deep into history the page is.
+//
+// Query params: company_id (required), cursor (optional — omit for the first
+// page), limit (default 50)
 router.get('/movements', requireCompanyAccess(req => req.query.company_id), asyncHandler(async (req, res) => {
   const companyId = v.id(req.query.company_id, 'company_id');
-  const page      = Math.max(1, parseInt(req.query.page,  10) || 1);
-  const limit     = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
-  const offset    = (page - 1) * limit;
+  const limit      = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+
+  let cursor;
+  try {
+    cursor = decodeCursor(req.query.cursor);
+  } catch {
+    throw new ValidationError('Invalid pagination cursor');
+  }
 
   // The page of rows and the total count don't depend on each other — run
-  // them concurrently rather than paying two sequential round trips.
+  // them concurrently rather than paying two sequential round trips. `total`
+  // is only for the "Page X of Y" display; the data query itself no longer
+  // needs it.
   const [{ rows }, { rows: countRows }] = await Promise.all([
     query(`
       SELECT
@@ -122,6 +138,7 @@ router.get('/movements', requireCompanyAccess(req => req.query.company_id), asyn
         m.quantity_delta,
         m.note,
         m.created_at,
+        to_char(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_precise,
         i.id          AS item_id,
         i.name        AS item_name,
         i.unit        AS item_unit,
@@ -130,18 +147,25 @@ router.get('/movements', requireCompanyAccess(req => req.query.company_id), asyn
       JOIN items i ON i.id = m.item_id
       LEFT JOIN users u ON u.id = m.user_id
       WHERE m.company_id = $1
+        AND ($3::timestamptz IS NULL OR (m.created_at, m.id) < ($3::timestamptz, $4::int))
       ORDER BY m.created_at DESC, m.id DESC
-      LIMIT $2 OFFSET $3
-    `, [companyId, limit, offset]),
+      LIMIT $2
+    `, [companyId, limit, cursor?.createdAt ?? null, cursor?.id ?? null]),
     query('SELECT COUNT(*)::int AS total FROM stock_movements WHERE company_id = $1', [companyId]),
   ]);
 
+  const last = rows[rows.length - 1];
+  const nextCursor = rows.length === limit && last
+    ? encodeCursor({ createdAt: last.created_at_precise, id: last.id })
+    : null;
+  rows.forEach(r => delete r.created_at_precise);
+
   res.json({
     movements: rows,
-    total:     countRows[0].total,
-    page,
+    total:      countRows[0].total,
     limit,
-    pages:     Math.ceil(countRows[0].total / limit),
+    pages:      Math.ceil(countRows[0].total / limit),
+    nextCursor,
   });
 }));
 

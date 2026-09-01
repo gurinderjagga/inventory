@@ -30,33 +30,22 @@ const COMPANIES_CACHE_KEY = 'companies:all';
 const COMPANIES_CACHE_TTL_MS = 15_000;
 
 async function getCompaniesWithStats() {
-  const cached = cache.get(COMPANIES_CACHE_KEY);
-  if (cached) return cached;
-
-  // COALESCE keeps the aggregates numeric for companies with no items,
-  // where SUM() would otherwise return NULL.
-  const { rows } = await query(`
-    SELECT
-      c.*,
-      COUNT(i.id)                                                            AS item_count,
-      COALESCE(SUM(CASE WHEN i.quantity <= i.low_stock_threshold THEN 1 ELSE 0 END), 0) AS low_stock_count,
-      COALESCE(SUM(i.quantity * i.unit_price), 0)                            AS stock_value
-    FROM companies c
-    LEFT JOIN items i ON i.company_id = c.id
-    GROUP BY c.id
-    ORDER BY c.name
-  `);
-
-  // COUNT/SUM over bigint come back as strings from pg; the client expects
-  // numbers for arithmetic and comparisons.
-  const mapped = rows.map(r => ({
-    ...r,
-    item_count:      Number(r.item_count),
-    low_stock_count: Number(r.low_stock_count),
-    stock_value:     Number(r.stock_value),
-  }));
-  cache.set(COMPANIES_CACHE_KEY, mapped, COMPANIES_CACHE_TTL_MS);
-  return mapped;
+  return cache.getOrFetch(COMPANIES_CACHE_KEY, COMPANIES_CACHE_TTL_MS, async () => {
+    // item_count / low_stock_count / stock_value are maintained columns on
+    // companies itself (see lib/companyAggregates.js), kept in sync by every
+    // item/quantity mutation — not a live aggregate over `items` computed
+    // here. This used to be a LEFT JOIN + GROUP BY over every item in every
+    // company, recomputed from scratch on every 15-second cache miss; that
+    // cost grew with total item count system-wide, on the single most-hit
+    // endpoint in the app, no matter how well the cache masked it. A plain
+    // SELECT here costs the same regardless of how large any company's
+    // catalog gets. item_count/low_stock_count are INTEGER and stock_value is
+    // NUMERIC (parsed to a JS number by the type override in database/db.js),
+    // so no post-processing is needed — unlike the old COUNT/SUM-over-bigint
+    // result, which came back as strings.
+    const { rows } = await query('SELECT * FROM companies ORDER BY name');
+    return rows;
+  });
 }
 
 /** Read and validate the company payload shared by POST and PUT. */
@@ -90,7 +79,7 @@ function readActive(body, current) {
 router.get('/', asyncHandler(async (req, res) => {
   const all = await getCompaniesWithStats();
   const visible = req.user.role === 'sub_admin'
-    ? all.filter(c => req.user.companyIds.includes(c.id))
+    ? all.filter(c => req.user.companyIdSet.has(c.id))
     : all;
   sendCached(req, res, visible);
 }));

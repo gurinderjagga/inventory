@@ -79,7 +79,7 @@ function agent(defaultHeaders = {}) {
 
   return {
     get:  (p, h) => request('GET', p, undefined, h),
-    post: (p, b) => request('POST', p, b),
+    post: (p, b, h) => request('POST', p, b, h),
     put:  (p, b) => request('PUT', p, b),
     del:  (p)    => request('DELETE', p),
     /** Sign in and keep the session for subsequent calls. */

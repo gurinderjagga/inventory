@@ -50,7 +50,7 @@ function requireCompanyAccess(getCompanyId) {
     if (req.user.role === 'admin') return next();
 
     const companyId = await getCompanyId(req);
-    if (!companyId || !req.user.companyIds.includes(Number(companyId))) {
+    if (!companyId || !req.user.companyIdSet.has(Number(companyId))) {
       throw new NotFoundError('Company not found');
     }
     next();
@@ -71,15 +71,13 @@ function requireFeature(key, getCompanyId) {
     const companyId = await getCompanyId(req);
     const cacheKey  = featureCacheKey(companyId, key);
 
-    let enabled = cache.get(cacheKey);
-    if (enabled === undefined) {
+    const enabled = await cache.getOrFetch(cacheKey, FEATURE_CACHE_TTL_MS, async () => {
       const { rows } = await query(
         'SELECT 1 FROM company_features WHERE company_id = $1 AND feature_key = $2',
         [companyId, key]
       );
-      enabled = rows.length > 0;
-      cache.set(cacheKey, enabled, FEATURE_CACHE_TTL_MS);
-    }
+      return rows.length > 0;
+    });
 
     if (!enabled) {
       const label = FEATURES[key]?.label ?? key;

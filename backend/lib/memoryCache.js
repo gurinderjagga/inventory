@@ -15,6 +15,13 @@
 
 const store = new Map(); // key -> { value, expiresAt }
 
+// Fetches currently in flight, keyed the same as `store`. Without this, every
+// request that arrives between a TTL expiry and the first request's query
+// resolving independently repeats that same query — on the busiest endpoint
+// in the app, a 15s cache window closing under real concurrent load means
+// dozens of requests hit Neon with the identical question at once, not one.
+const inflight = new Map(); // key -> Promise
+
 /** @returns {*} the cached value, or undefined if absent or expired. */
 function get(key) {
   const entry = store.get(key);
@@ -42,9 +49,47 @@ function delPrefix(prefix) {
   }
 }
 
+/**
+ * Read-through cache with single-flight coalescing: on a miss, the first
+ * caller runs `fetchFn` and every concurrent caller for the same key awaits
+ * that same in-flight promise instead of starting a duplicate query.
+ *
+ * A write racing an in-flight fetch (a `del()` landing between this fetch
+ * starting and it resolving) can still let a stale value get cached — the
+ * same tradeoff the plain cache-aside pattern already had before this
+ * existed, bounded by `ttlMs` either way. This only removes the *duplicate
+ * concurrent query* problem, not that pre-existing, already-accepted one.
+ *
+ * @param {string} key
+ * @param {number} ttlMs
+ * @param {() => Promise<*>} fetchFn
+ * @returns {Promise<*>}
+ */
+async function getOrFetch(key, ttlMs, fetchFn) {
+  const cached = get(key);
+  if (cached !== undefined) return cached;
+
+  const existing = inflight.get(key);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      const value = await fetchFn();
+      set(key, value, ttlMs);
+      return value;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+
+  inflight.set(key, promise);
+  return promise;
+}
+
 /** Clears everything — test isolation only. */
 function clear() {
   store.clear();
+  inflight.clear();
 }
 
-module.exports = { get, set, del, delPrefix, clear };
+module.exports = { get, set, del, delPrefix, getOrFetch, clear };

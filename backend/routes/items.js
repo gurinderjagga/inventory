@@ -8,6 +8,7 @@ const { sendCached } = require('../lib/httpCache');
 const v = require('../lib/validate');
 const money = require('../lib/money');
 const { applyMovement } = require('../lib/stockLedger');
+const { recomputeCompanyAggregates } = require('../lib/companyAggregates');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -65,8 +66,15 @@ router.get('/company/:companyId', requireCompanyAccess(req => req.params.company
   const offset    = (page - 1) * limit;
 
   const [{ rows }, { rows: countRows }] = await Promise.all([
+    // Narrowed to the columns the list view (and the edit form it feeds,
+    // which needs everything a create does except the audit fields) actually
+    // reads — company_id, created_at, and updated_at are never used once the
+    // row reaches the frontend, same over-fetch pattern already fixed on the
+    // other two paginated list queries (stock.js, invoices.js).
     query(
-      'SELECT * FROM items WHERE company_id = $1 ORDER BY name ASC LIMIT $2 OFFSET $3',
+      `SELECT id, name, sku, unit, quantity, unit_price, low_stock_threshold,
+              hsn_sac_code, is_service, gst_rate, uqc, cost_price, active
+       FROM items WHERE company_id = $1 ORDER BY name ASC LIMIT $2 OFFSET $3`,
       [companyId, limit, offset]
     ),
     query('SELECT COUNT(*)::int AS total FROM items WHERE company_id = $1', [companyId]),
@@ -124,6 +132,12 @@ router.post('/', requireCompanyAccess(req => req.body.company_id), asyncHandler(
           reason: 'initial_stock', userId: req.user.id,
         });
         row.quantity = newQuantity;
+      } else {
+        // applyMovement recomputes the company's aggregates itself as a side
+        // effect of the quantity it just changed — but an item created with
+        // no starting quantity never calls it, and item_count still needs to
+        // account for the new row.
+        await recomputeCompanyAggregates(client, companyId);
       }
       return row;
     });
@@ -148,18 +162,26 @@ router.put('/:id', requireCompanyAccess(companyIdForItem), asyncHandler(async (r
   const active = readActive(req.body, existing[0].active);
 
   try {
-    const { rows } = await query(
-      `UPDATE items
-       SET name = $1, sku = $2, unit = $3, unit_price = $4, low_stock_threshold = $5,
-           hsn_sac_code = $6, is_service = $7, gst_rate = $8, uqc = $9, cost_price = $10,
-           active = $11, updated_at = now()
-       WHERE id = $12
-       RETURNING *`,
-      [item.name, item.sku, item.unit, item.unitPrice, item.threshold,
-        item.hsnSacCode, item.isService, item.gstRate, item.uqc, item.costPrice, active, id]
-    );
-    if (!rows[0]) throw new NotFoundError('Item not found');
-    res.json(rows[0]);
+    const updated = await runTransaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE items
+         SET name = $1, sku = $2, unit = $3, unit_price = $4, low_stock_threshold = $5,
+             hsn_sac_code = $6, is_service = $7, gst_rate = $8, uqc = $9, cost_price = $10,
+             active = $11, updated_at = now()
+         WHERE id = $12
+         RETURNING *`,
+        [item.name, item.sku, item.unit, item.unitPrice, item.threshold,
+          item.hsnSacCode, item.isService, item.gstRate, item.uqc, item.costPrice, active, id]
+      );
+      if (!rows[0]) throw new NotFoundError('Item not found');
+      // Price and threshold can both change here without quantity moving at
+      // all — either one changes this item's contribution to stock_value or
+      // low_stock_count, so the company's aggregates need a recompute same
+      // as any quantity-driven change does.
+      await recomputeCompanyAggregates(client, rows[0].company_id);
+      return rows[0];
+    });
+    res.json(updated);
   } catch (err) {
     if (err.code === PG_UNIQUE_VIOLATION) {
       throw new ConflictError('An item with that SKU already exists for this company');
@@ -220,7 +242,7 @@ router.get('/:id/movements', requireCompanyAccess(companyIdForItem), asyncHandle
 router.delete('/:id', requireCompanyAccess(companyIdForItem), asyncHandler(async (req, res) => {
   const id = v.id(req.params.id, 'Item id');
 
-  const { rows: existing } = await query('SELECT name FROM items WHERE id = $1', [id]);
+  const { rows: existing } = await query('SELECT name, company_id FROM items WHERE id = $1', [id]);
   if (!existing[0]) throw new NotFoundError('Item not found');
 
   // An item that appears on an invoice or a goods receipt cannot be removed
@@ -242,7 +264,13 @@ router.delete('/:id', requireCompanyAccess(companyIdForItem), asyncHandler(async
     );
   }
 
-  await query('DELETE FROM items WHERE id = $1', [id]);
+  await runTransaction(async (client) => {
+    await client.query('DELETE FROM items WHERE id = $1', [id]);
+    // The deleted item's own count/value must drop out of the company's
+    // totals too — a recompute over what's left, same as every other
+    // aggregate-affecting mutation in this file.
+    await recomputeCompanyAggregates(client, existing[0].company_id);
+  });
   res.json({ message: 'Item deleted successfully' });
 }));
 

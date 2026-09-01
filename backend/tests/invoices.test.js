@@ -391,6 +391,107 @@ test('the summary endpoint reports finalized revenue and draft count separately'
   assert.equal(Number(res.body.finalized_revenue), 100);
 });
 
+/* ── idempotent draft creation ────────────────────────────────────────────── */
+
+test('two draft creations with the same Idempotency-Key return the same invoice, not two', async () => {
+  const company = await registeredCompany();
+  await enableInvoicing(company.id);
+  const item = await createItem(company.id, { gst_rate: 18, unit_price: 100 });
+
+  const key = 'retry-key-abc123';
+  const first  = await a.post('/api/invoices', draftPayload(company.id, item), { 'Idempotency-Key': key });
+  const second = await a.post('/api/invoices', draftPayload(company.id, item), { 'Idempotency-Key': key });
+
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 200, 'a replayed request is not a new creation');
+  assert.equal(second.body.id, first.body.id, 'the exact same draft is returned, not a duplicate');
+
+  const { rows } = await query('SELECT COUNT(*)::int AS n FROM invoices WHERE company_id = $1', [company.id]);
+  assert.equal(rows[0].n, 1, 'only one invoice row actually exists');
+});
+
+test('the same Idempotency-Key on a different company is not treated as a collision', async () => {
+  const companyA = await createCompany('Company A', {
+    gstin: '27ABCDE1234F1Z5', legal_name: 'Company A Pvt Ltd', state_code: '27', scheme: 'regular',
+  });
+  const companyB = await createCompany('Company B', {
+    gstin: '07ABCDE1234F1Z5', legal_name: 'Company B Pvt Ltd', state_code: '07', scheme: 'regular',
+  });
+  await enableInvoicing(companyA.id);
+  await enableInvoicing(companyB.id);
+  const itemA = await createItem(companyA.id, { gst_rate: 18, unit_price: 100 });
+  const itemB = await createItem(companyB.id, { gst_rate: 18, unit_price: 100 });
+
+  const key = 'shared-key';
+  const resA = await a.post('/api/invoices', draftPayload(companyA.id, itemA), { 'Idempotency-Key': key });
+  const resB = await a.post('/api/invoices', draftPayload(companyB.id, itemB), { 'Idempotency-Key': key });
+
+  assert.equal(resA.status, 201);
+  assert.equal(resB.status, 201, 'same key, different company — a genuinely new draft, not a replay');
+  assert.notEqual(resA.body.id, resB.body.id);
+});
+
+test('omitting Idempotency-Key behaves exactly as before — every call creates a new draft', async () => {
+  const company = await registeredCompany();
+  await enableInvoicing(company.id);
+  const item = await createItem(company.id, { gst_rate: 18, unit_price: 100 });
+
+  const first  = await a.post('/api/invoices', draftPayload(company.id, item));
+  const second = await a.post('/api/invoices', draftPayload(company.id, item));
+
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  assert.notEqual(first.body.id, second.body.id);
+});
+
+/* ── keyset pagination on GET /company/:companyId ────────────────────────── */
+
+test('the invoice list needs no cursor for the first page and reports nextCursor when there is more', async () => {
+  const company = await registeredCompany();
+  await enableInvoicing(company.id);
+  const item = await createItem(company.id, { quantity: 100 });
+
+  for (let i = 0; i < 3; i++) {
+    await a.post('/api/invoices', draftPayload(company.id, item, { line_items: [{ item_id: item.id, quantity: 1, unit_price: 10 }] }));
+  }
+
+  const res = await a.get(`/api/invoices/company/${company.id}?limit=2`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.invoices.length, 2);
+  assert.equal(res.body.total, 3);
+  assert.ok(res.body.nextCursor);
+
+  const secondPage = await a.get(`/api/invoices/company/${company.id}?limit=2&cursor=${encodeURIComponent(res.body.nextCursor)}`);
+  assert.equal(secondPage.body.invoices.length, 1);
+  assert.equal(secondPage.body.nextCursor, null);
+
+  // No invoice id appears on both pages.
+  const idsA = res.body.invoices.map(i => i.id);
+  const idsB = secondPage.body.invoices.map(i => i.id);
+  assert.equal(idsA.filter(id => idsB.includes(id)).length, 0);
+});
+
+test('omitting cursor on a repeat call still returns the first page — existing frontend usage is unaffected', async () => {
+  const company = await registeredCompany();
+  await enableInvoicing(company.id);
+  const item = await createItem(company.id, { quantity: 100 });
+  await a.post('/api/invoices', draftPayload(company.id, item, { line_items: [{ item_id: item.id, quantity: 1, unit_price: 10 }] }));
+
+  const first  = await a.get(`/api/invoices/company/${company.id}`);
+  const second = await a.get(`/api/invoices/company/${company.id}`);
+  assert.deepEqual(first.body.invoices.map(i => i.id), second.body.invoices.map(i => i.id));
+});
+
+test('a malformed invoice-list cursor is a 400', async () => {
+  const company = await registeredCompany();
+  await enableInvoicing(company.id);
+  // Valid base64url, but not JSON once decoded — exercises the JSON.parse
+  // failure path deterministically, without depending on URL-encoding of
+  // characters outside the base64url alphabet.
+  const res = await a.get(`/api/invoices/company/${company.id}?cursor=aGVsbG8`);
+  assert.equal(res.status, 400);
+});
+
 /* ── requireFeature caching ───────────────────────────────────────────── */
 
 test('disabling invoicing takes effect immediately, not after a cache TTL', async () => {

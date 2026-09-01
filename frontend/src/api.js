@@ -93,8 +93,10 @@ export const api = {
   // Stock transactions
   stockIn:           (d) => request('POST', '/api/stock/in', d),
   stockOut:          (d) => request('POST', '/api/stock/out', d),
-  getStockMovements: (companyId, page = 1, limit = 50) =>
-    request('GET', `/api/stock/movements?company_id=${companyId}&page=${page}&limit=${limit}`),
+  // Keyset pagination: omit `cursor` for the first page; pass the previous
+  // response's `nextCursor` to continue forward. See backend/lib/keysetCursor.js.
+  getStockMovements: (companyId, cursor = null, limit = 50) =>
+    request('GET', `/api/stock/movements?company_id=${companyId}&limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
 
   // Invoices — GST tax invoices, gated by the `invoicing` company feature
   getInvoices:     (companyId) => request('GET', `/api/invoices/company/${companyId}?limit=200`).then(d => d.invoices),

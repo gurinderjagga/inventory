@@ -121,7 +121,7 @@ export default function Dashboard() {
 
       // Kick off movements fetch in parallel with nothing else blocking us.
       const movResult = firstCo
-        ? await api.getStockMovements(firstCo.id, 1, 10)
+        ? await api.getStockMovements(firstCo.id, null, 10)
         : { movements: [] };
 
       // Invoicing is opt-in per company (see the Companies "Features" toggle) —

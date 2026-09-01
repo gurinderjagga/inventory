@@ -8,6 +8,35 @@
 const { Pool, types } = require('pg');
 const { DATABASE_URL } = require('../config');
 const { FEATURE_KEYS } = require('../lib/features');
+const logger = require('../lib/logger');
+
+// Any single query at or above this is logged as slow — a P95 creeping
+// upward on a paginated endpoint (or a lock wait inside a transaction) is
+// otherwise invisible until someone reruns a benchmark by hand.
+const SLOW_QUERY_MS = 500;
+
+/** Log `text` as a slow query if it took at least SLOW_QUERY_MS. */
+function logIfSlow(text, startedAt) {
+  const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+  if (durationMs >= SLOW_QUERY_MS) {
+    logger.warn('slow_query', {
+      durationMs: Math.round(durationMs),
+      // Collapsed whitespace and capped length: these are multi-line
+      // template-literal SQL strings, not meant for a one-line log record.
+      sql: text.replace(/\s+/g, ' ').trim().slice(0, 300),
+    });
+  }
+}
+
+/** Run `queryFn(text, params)`, timing it, regardless of outcome. */
+async function timed(queryFn, text, params) {
+  const startedAt = process.hrtime.bigint();
+  try {
+    return await queryFn(text, params);
+  } finally {
+    logIfSlow(text, startedAt);
+  }
+}
 
 /**
  * Return NUMERIC columns as JavaScript numbers rather than strings.
@@ -64,7 +93,7 @@ const pool = new Pool({
 // A pooled client can fail while idle (network blip, Neon scale-to-zero).
 // Without a listener this reaches 'uncaughtException' and kills the process.
 pool.on('error', (err) => {
-  console.error('Unexpected Postgres pool error:', err.message);
+  logger.error('pg_pool_error', { message: err.message, code: err.code });
 });
 
 /**
@@ -74,7 +103,7 @@ pool.on('error', (err) => {
  * @returns {Promise<import('pg').QueryResult>}
  */
 function query(text, params) {
-  return pool.query(text, params);
+  return timed((t, p) => pool.query(t, p), text, params);
 }
 
 /**
@@ -91,9 +120,14 @@ function query(text, params) {
  */
 async function runTransaction(fn) {
   const client = await pool.connect();
+  // fn() only ever calls `.query()` on what it's handed — a plain object
+  // forwarding to the real client, timed the same way the top-level query()
+  // is, rather than mutating the pooled client itself (which would still be
+  // wrapped, doubly, the next time this same client is checked out).
+  const timedClient = { query: (text, params) => timed((t, p) => client.query(t, p), text, params) };
   try {
     await client.query('BEGIN');
-    const result = await fn(client);
+    const result = await fn(timedClient);
     await client.query('COMMIT');
     return result;
   } catch (err) {
@@ -245,6 +279,8 @@ async function applySchemaUpdates() {
   await addFeatureFlags();
   await addInvoiceLegalFields();
   await addPerformanceIndexes();
+  await addCompanyAggregateColumns();
+  await addInvoiceIdempotencyKey();
 }
 
 /**
@@ -646,6 +682,82 @@ async function addTaxEngine() {
   );
 }
 
+/**
+ * Phase 10 — companies.item_count / low_stock_count / stock_value, maintained
+ * columns replacing the LEFT JOIN + GROUP BY over `items` that
+ * getCompaniesWithStats() used to run on every cache miss (see
+ * routes/companies.js and lib/companyAggregates.js, which every item/quantity
+ * mutation now calls to keep these in sync).
+ *
+ * The backfill below runs on every boot, not just the first time these
+ * columns are added — it's bounded by total item count, runs once at
+ * startup rather than on any request path, and doubles as a self-healing
+ * pass against drift, which is exactly the failure mode a recompute-based
+ * design (as opposed to incrementing counters at each call site) exists to
+ * avoid in the first place.
+ */
+async function addCompanyAggregateColumns() {
+  await pool.query(`
+    ALTER TABLE companies
+      ADD COLUMN IF NOT EXISTS item_count     INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS low_stock_count INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS stock_value     NUMERIC(14,2) NOT NULL DEFAULT 0
+  `);
+
+  await pool.query(`
+    UPDATE companies c
+    SET item_count = agg.item_count,
+        low_stock_count = agg.low_stock_count,
+        stock_value = agg.stock_value
+    FROM (
+      SELECT
+        i.company_id,
+        COUNT(*)::int AS item_count,
+        COALESCE(SUM(CASE WHEN i.quantity <= i.low_stock_threshold THEN 1 ELSE 0 END), 0)::int AS low_stock_count,
+        COALESCE(SUM(i.quantity * i.unit_price), 0) AS stock_value
+      FROM items i
+      GROUP BY i.company_id
+    ) agg
+    WHERE c.id = agg.company_id
+  `);
+
+  // A company with zero items has nothing for the GROUP BY above to
+  // produce, so it needs its own pass back to zero — otherwise one whose
+  // last item was deleted between boots would keep whatever stale numbers
+  // it last had instead of reflecting its now-empty catalog.
+  await pool.query(`
+    UPDATE companies
+    SET item_count = 0, low_stock_count = 0, stock_value = 0
+    WHERE id NOT IN (SELECT DISTINCT company_id FROM items)
+  `);
+}
+
+/**
+ * Phase 11 — idempotent invoice-draft creation (scalability audit finding
+ * #7). A client-side network retry — the request timed out locally after the
+ * server already committed, more likely as concurrent load and network
+ * variance grow, not less — otherwise creates a second, indistinguishable
+ * draft invoice with no way for the server to recognize it as the same
+ * logical request. `POST /:id/finalize` already has this for free (the row
+ * is locked FOR UPDATE and a second call sees a non-draft status); draft
+ * creation had no equivalent.
+ *
+ * The column is nullable and the index partial (WHERE idempotency_key IS
+ * NOT NULL) — a caller that never sends the header keeps behaving exactly
+ * as before, unaffected by this migration or the route's new-but-optional
+ * check, same pattern as idx_companies_gstin above.
+ */
+async function addInvoiceIdempotencyKey() {
+  await pool.query(`
+    ALTER TABLE invoices
+      ADD COLUMN IF NOT EXISTS idempotency_key TEXT
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_company_idempotency_key
+      ON invoices(company_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+  `);
+}
+
 /** Add a named constraint only if a constraint with that name doesn't already exist. */
 async function addConstraintIfMissing(table, constraintName, addSql) {
   const { rows } = await pool.query(`
@@ -684,6 +796,8 @@ module.exports = {
   addFeatureFlags,
   addInvoiceLegalFields,
   addPerformanceIndexes,
+  addCompanyAggregateColumns,
+  addInvoiceIdempotencyKey,
   PG_UNIQUE_VIOLATION,
   PG_FOREIGN_KEY_VIOLATION,
 };

@@ -31,6 +31,7 @@ const money = require('../lib/money');
 const gst = require('../lib/gst');
 const { formatAmount } = require('../lib/currency');
 const { applyMovements } = require('../lib/stockLedger');
+const { encodeCursor, decodeCursor } = require('../lib/keysetCursor');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -225,29 +226,52 @@ router.get('/company/:companyId/summary', ...gate(req => req.params.companyId), 
   res.json(rows[0]);
 }));
 
-// ── GET /company/:companyId — paginated list ─────────────────────────────────
+// ── GET /company/:companyId — list, newest first ─────────────────────────────
+// Keyset (seek) pagination, not OFFSET — invoices, like stock_movements, is
+// append-only, so a fixed page number would get slower every month on its
+// own as invoice history grows. See lib/keysetCursor.js for why.
+//
+// Omitting `cursor` gets the first page — the frontend's normal "load the
+// current company's invoices" call is entirely unaffected by this change.
 router.get('/company/:companyId', ...gate(req => req.params.companyId), asyncHandler(async (req, res) => {
   const companyId = v.id(req.params.companyId, 'Company id');
-  const page      = Math.max(1, parseInt(req.query.page, 10) || 1);
-  const limit     = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
-  const offset    = (page - 1) * limit;
+  const limit      = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+
+  let cursor;
+  try {
+    cursor = decodeCursor(req.query.cursor);
+  } catch {
+    throw new ValidationError('Invalid pagination cursor');
+  }
 
   // The page of rows and the total count don't depend on each other — run
   // them concurrently rather than paying two sequential round trips.
   const [{ rows }, { rows: countRows }] = await Promise.all([
     query(
-      `SELECT id, invoice_no, customer_name, subtotal, total, status, created_at
-       FROM invoices WHERE company_id = $1
+      `SELECT id, invoice_no, customer_name, subtotal, total, status, created_at,
+              to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_precise
+       FROM invoices
+       WHERE company_id = $1
+         AND ($3::timestamptz IS NULL OR (created_at, id) < ($3::timestamptz, $4::int))
        ORDER BY created_at DESC, id DESC
-       LIMIT $2 OFFSET $3`,
-      [companyId, limit, offset]
+       LIMIT $2`,
+      [companyId, limit, cursor?.createdAt ?? null, cursor?.id ?? null]
     ),
     query('SELECT COUNT(*)::int AS total FROM invoices WHERE company_id = $1', [companyId]),
   ]);
 
+  const last = rows[rows.length - 1];
+  const nextCursor = rows.length === limit && last
+    ? encodeCursor({ createdAt: last.created_at_precise, id: last.id })
+    : null;
+  rows.forEach(r => delete r.created_at_precise);
+
   res.json({
-    invoices: rows, total: countRows[0].total, page, limit,
-    pages: Math.ceil(countRows[0].total / limit),
+    invoices: rows,
+    total:     countRows[0].total,
+    limit,
+    pages:     Math.ceil(countRows[0].total / limit),
+    nextCursor,
   });
 }));
 
@@ -266,6 +290,11 @@ router.get('/:id', ...gate(companyIdForInvoice), asyncHandler(async (req, res) =
 router.post('/', ...gate(req => req.body.company_id), asyncHandler(async (req, res) => {
   const companyId = v.id(req.body.company_id, 'company_id');
   const billTo    = readBillTo(req.body);
+  // Optional: a caller that never sends this header gets exactly today's
+  // behavior — a fresh draft on every call, no dedup. One that does gets a
+  // network retry recognized as "the same request that already succeeded"
+  // rather than a second, indistinguishable draft.
+  const idempotencyKey = v.optionalString(req.get('Idempotency-Key'));
 
   const { rows: companies } = await query('SELECT * FROM companies WHERE id = $1', [companyId]);
   const company = companies[0];
@@ -276,40 +305,58 @@ router.post('/', ...gate(req => req.body.company_id), asyncHandler(async (req, r
   const totals   = invoiceTotals(lines, { chargesTax, intraState });
   const supplier = snapshotSupplier(company);
 
-  const created = await runTransaction(async (client) => {
-    let invoice;
-    try {
-      const { rows: invRows } = await client.query(
-        `INSERT INTO invoices (
-           invoice_no, company_id, customer_name, customer_email, customer_address,
-           customer_gstin, customer_state_code, delivery_address, reverse_charge, notes,
-           subtotal, total, status,
-           supplier_gstin, supplier_name, supplier_address, supplier_state_code,
-           supplier_scheme, supplier_signatory_name, place_of_supply_state,
-           cgst_total, sgst_total, igst_total, round_off
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'draft',
-                   $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
-         RETURNING *`,
-        [
-          randomPlaceholderNumber(), companyId, billTo.customerName, billTo.customerEmail, billTo.customerAddress,
-          billTo.customerGstin, billTo.customerStateCode, billTo.deliveryAddress, billTo.reverseCharge, billTo.notes,
-          totals.subtotal, totals.total,
-          supplier.gstin, supplier.name, supplier.address, supplier.stateCode,
-          supplier.scheme, supplier.signatoryName, billTo.customerStateCode,
-          totals.cgstTotal, totals.sgstTotal, totals.igstTotal, totals.roundOff,
-        ]
-      );
-      invoice = invRows[0];
-    } catch (err) {
-      if (err.code === PG_UNIQUE_VIOLATION) {
-        throw new ConflictError('Could not allocate a draft number — please try again');
+  let created;
+  try {
+    created = await runTransaction(async (client) => {
+      let invoice;
+      try {
+        const { rows: invRows } = await client.query(
+          `INSERT INTO invoices (
+             invoice_no, company_id, customer_name, customer_email, customer_address,
+             customer_gstin, customer_state_code, delivery_address, reverse_charge, notes,
+             subtotal, total, status, idempotency_key,
+             supplier_gstin, supplier_name, supplier_address, supplier_state_code,
+             supplier_scheme, supplier_signatory_name, place_of_supply_state,
+             cgst_total, sgst_total, igst_total, round_off
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'draft',$13,
+                     $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+           RETURNING *`,
+          [
+            randomPlaceholderNumber(), companyId, billTo.customerName, billTo.customerEmail, billTo.customerAddress,
+            billTo.customerGstin, billTo.customerStateCode, billTo.deliveryAddress, billTo.reverseCharge, billTo.notes,
+            totals.subtotal, totals.total, idempotencyKey,
+            supplier.gstin, supplier.name, supplier.address, supplier.stateCode,
+            supplier.scheme, supplier.signatoryName, billTo.customerStateCode,
+            totals.cgstTotal, totals.sgstTotal, totals.igstTotal, totals.roundOff,
+          ]
+        );
+        invoice = invRows[0];
+      } catch (err) {
+        if (err.code === PG_UNIQUE_VIOLATION && err.constraint === 'idx_invoices_company_idempotency_key') {
+          // Re-thrown, not handled here: a failed statement poisons the rest
+          // of this transaction in Postgres, so the lookup below has to run
+          // in its own query after this one has fully rolled back.
+          throw err;
+        }
+        if (err.code === PG_UNIQUE_VIOLATION) {
+          throw new ConflictError('Could not allocate a draft number — please try again');
+        }
+        throw err;
       }
-      throw err;
-    }
 
-    await insertLineItems(client, invoice.id, lines, totals.lineTaxes);
-    return invoice;
-  });
+      await insertLineItems(client, invoice.id, lines, totals.lineTaxes);
+      return invoice;
+    });
+  } catch (err) {
+    if (err.code === PG_UNIQUE_VIOLATION && err.constraint === 'idx_invoices_company_idempotency_key') {
+      const { rows: dup } = await query(
+        'SELECT * FROM invoices WHERE company_id = $1 AND idempotency_key = $2',
+        [companyId, idempotencyKey]
+      );
+      if (dup[0]) return res.status(200).json(dup[0]);
+    }
+    throw err;
+  }
 
   res.status(201).json(created);
 }));

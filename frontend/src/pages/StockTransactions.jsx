@@ -513,15 +513,26 @@ function MovementHistory({ companies }) {
   const [companyId, setCompanyId] = useState('');
   const [data,      setData]      = useState(null);
   const [loading,   setLoading]   = useState(false);
-  const [page,      setPage]      = useState(1);
+  const [pageIndex, setPageIndex] = useState(0); // 0-based, for the "Page N of M" label
 
-  const load = useCallback(async (cid, p = 1) => {
+  // The movements list is keyset-paginated (see backend/lib/keysetCursor.js) —
+  // there's no page number to ask the server for, only "give me what comes
+  // after this cursor". Prev/Next here is strictly sequential, so a simple
+  // stack of the cursors already seen is enough: cursors[0] is always null
+  // (the first page), and cursors[i+1] is whatever page i's response said
+  // came next. A ref, not state — it doesn't need to trigger a re-render,
+  // only `data`/`pageIndex` do.
+  const cursorsRef = useRef([null]);
+
+  const load = useCallback(async (cid, idx) => {
     if (!cid) return;
     setLoading(true);
     try {
-      const result = await api.getStockMovements(cid, p, 30);
+      const cursor = cursorsRef.current[idx] ?? null;
+      const result = await api.getStockMovements(cid, cursor, 30);
       setData(result);
-      setPage(p);
+      setPageIndex(idx);
+      if (result.nextCursor) cursorsRef.current[idx + 1] = result.nextCursor;
     } catch (err) {
       if (!isAuthError(err)) toast.error(err.message);
     } finally {
@@ -530,7 +541,8 @@ function MovementHistory({ companies }) {
   }, [toast]);
 
   useEffect(() => {
-    if (companyId) load(companyId, 1);
+    cursorsRef.current = [null];
+    if (companyId) load(companyId, 0);
     else setData(null);
   }, [companyId, load]);
 
@@ -551,7 +563,7 @@ function MovementHistory({ companies }) {
         </div>
         {companyId && (
           <button className="btn btn-secondary btn-sm" style={{ alignSelf: 'flex-end' }}
-                  onClick={() => load(companyId, page)} disabled={loading}>
+                  onClick={() => load(companyId, pageIndex)} disabled={loading}>
             <IconRefresh size={ICON_MD} /> Refresh
           </button>
         )}
@@ -619,10 +631,13 @@ function MovementHistory({ companies }) {
           {data.pages > 1 && (
             <div className="txn-pagination">
               <button className="btn btn-secondary btn-sm"
-                      disabled={page <= 1} onClick={() => load(companyId, page - 1)}>← Prev</button>
-              <span className="db-secondary">Page {page} of {data.pages}</span>
+                      disabled={pageIndex <= 0} onClick={() => load(companyId, pageIndex - 1)}>← Prev</button>
+              <span className="db-secondary">Page {pageIndex + 1} of {data.pages}</span>
+              {/* `nextCursor` is the authoritative "is there more" — `pages` is
+                  only an estimate from the count query, taken alongside the
+                  page query rather than in the same snapshot. */}
               <button className="btn btn-secondary btn-sm"
-                      disabled={page >= data.pages} onClick={() => load(companyId, page + 1)}>Next →</button>
+                      disabled={!data.nextCursor} onClick={() => load(companyId, pageIndex + 1)}>Next →</button>
             </div>
           )}
         </>

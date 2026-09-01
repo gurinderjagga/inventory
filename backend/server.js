@@ -9,6 +9,7 @@ const fs = require('fs');
 const { initDB, closeDB } = require('./database/db');
 const { apiLimiter } = require('./middleware/rateLimit');
 const { ensureAdminUser, DEFAULT_ADMIN } = require('./database/seed');
+const logger = require('./lib/logger');
 
 const app = express();
 const PORT = config.PORT;
@@ -135,6 +136,27 @@ function ensureReady() {
 app.use(express.json());
 app.use(cookieParser());
 
+// ── Request timing ───────────────────────────────────────────
+// One structured line per response. This is what would have surfaced every
+// other finding in the scalability audit as a real regression before it
+// became a customer-visible incident, instead of after — there was
+// previously no way to see a P95 creeping upward without re-running a
+// benchmark by hand. Mounted before the readiness gate so it also times
+// requests that wait on a cold-start schema check.
+app.use((req, res, next) => {
+  const startedAt = process.hrtime.bigint();
+  res.on('finish', () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    logger.info('request', {
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      durationMs: Math.round(durationMs * 100) / 100,
+    });
+  });
+  next();
+});
+
 // Block requests until the schema is ready. A no-op once resolved, so this
 // costs nothing after the first request on any given instance.
 app.use((req, res, next) => {
@@ -223,6 +245,13 @@ const PG_STATUS = {
   '23502': [400, 'A required field was missing'],            // not_null_violation
   '22P02': [400, 'A value in the request was not valid'],    // invalid_text_representation
   '22003': [400, 'A number in the request was out of range'],// numeric_value_out_of_range
+  // Both transient: two transactions genuinely collided (e.g. two concurrent
+  // stock-ledger updates touching overlapping items) rather than either one
+  // being wrong. The transaction is already rolled back by the time this
+  // runs, so the caller just needs to know it's safe — and correct — to
+  // retry the same request, not that something is broken.
+  '40P01': [409, 'This update conflicted with another one in progress — please try again'], // deadlock_detected
+  '40001': [409, 'This update conflicted with another one in progress — please try again'], // serialization_failure
 };
 
 app.use((err, req, res, _next) => {
@@ -233,12 +262,20 @@ app.use((err, req, res, _next) => {
 
   const mapped = PG_STATUS[err.code];
   if (mapped) {
-    console.error(`Database constraint error (${err.code}) on ${req.method} ${req.originalUrl}:`, err.message);
+    logger.error('db_constraint_error', {
+      code: err.code, method: req.method, path: req.originalUrl, message: err.message,
+    });
     return res.status(mapped[0]).json({ error: mapped[1] });
   }
 
   // Anything else is unexpected: log it in full, tell the client nothing.
-  console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+  // err.code is included even though it's usually undefined here (anything
+  // with a mapped code took the branch above) — a deadlock or serialization
+  // failure that somehow bypasses the mapping above still leaves its code
+  // greppable rather than folded into an opaque generic-crash line.
+  logger.error('unhandled_error', {
+    code: err.code, method: req.method, path: req.originalUrl, message: err.message, stack: err.stack,
+  });
   res.status(500).json({ error: 'Internal server error' });
 });
 

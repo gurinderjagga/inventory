@@ -176,3 +176,85 @@ test('an item with only solo movement history can be deleted', async () => {
   const { rows } = await query('SELECT 1 FROM stock_movements WHERE item_id = $1', [res.body.id]);
   assert.equal(rows.length, 0, 'its movements should cascade away with it');
 });
+
+/* ── keyset pagination on GET /api/stock/movements ───────────────────────── */
+
+test('the first page needs no cursor and reports a nextCursor when there is more', async () => {
+  const item = await createItem(company.id, { quantity: 100 });
+  for (let i = 0; i < 5; i++) {
+    await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 1 });
+  }
+
+  const res = await a.get(`/api/stock/movements?company_id=${company.id}&limit=2`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.movements.length, 2);
+  assert.equal(res.body.total, 5);
+  assert.ok(res.body.nextCursor, 'more rows remain, so a cursor to continue must be present');
+});
+
+test('following nextCursor walks the full history exactly once each, newest first', async () => {
+  const item = await createItem(company.id, { quantity: 100 });
+  // Five distinct, orderable movements.
+  for (let i = 1; i <= 5; i++) {
+    await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: i });
+  }
+
+  const seen = [];
+  let cursor = null;
+  for (let guard = 0; guard < 10; guard++) {
+    const url = `/api/stock/movements?company_id=${company.id}&limit=2` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+    const res = await a.get(url);
+    seen.push(...res.body.movements.map(m => Number(m.quantity_delta)));
+    cursor = res.body.nextCursor;
+    if (!cursor) break;
+  }
+
+  // Dispatched 1,2,3,4,5 in that order; newest-first means the last dispatch (-5) comes first.
+  assert.deepEqual(seen, [-5, -4, -3, -2, -1]);
+});
+
+test('rows sharing the exact same created_at (a bulk insert) are not skipped across a page boundary', async () => {
+  // A single multi-row INSERT (as applyMovements does for invoice finalize/
+  // reverse) gives every row in the batch the identical timestamp, down to
+  // the microsecond. node-postgres parses timestamptz into a JS Date, which
+  // only has millisecond resolution, so naively round-tripping the cursor
+  // through Date/ISO-string can make ties within one millisecond invisible
+  // to the WHERE clause and silently drop rows. Force that exact collision
+  // here rather than hoping application timing produces it.
+  const item = await createItem(company.id, { quantity: 100 });
+  const { rows: ids } = await query(
+    `INSERT INTO stock_movements (company_id, item_id, reason, quantity_delta, created_at)
+     SELECT $1, $2, 'manual_adjustment', d, NOW()
+     FROM unnest(ARRAY[-1, -2, -3]::numeric[]) AS d
+     RETURNING id`,
+    [company.id, item.id]
+  );
+  assert.equal(ids.length, 3);
+
+  const seen = [];
+  let cursor = null;
+  for (let guard = 0; guard < 10; guard++) {
+    const url = `/api/stock/movements?company_id=${company.id}&limit=1` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+    const res = await a.get(url);
+    seen.push(...res.body.movements.map(m => m.id));
+    cursor = res.body.nextCursor;
+    if (!cursor) break;
+  }
+
+  assert.deepEqual(new Set(seen), new Set(ids.map(r => r.id)), 'every row from the batch must be returned exactly once');
+});
+
+test('the last page has no nextCursor', async () => {
+  const item = await createItem(company.id, { quantity: 100 });
+  await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 1 });
+  await a.post('/api/stock/out', { company_id: company.id, item_id: item.id, quantity: 1 });
+
+  const res = await a.get(`/api/stock/movements?company_id=${company.id}&limit=10`);
+  assert.equal(res.body.movements.length, 2);
+  assert.equal(res.body.nextCursor, null);
+});
+
+test('a malformed cursor is a 400, not a 500 or silently-wrong page', async () => {
+  const res = await a.get(`/api/stock/movements?company_id=${company.id}&cursor=not-valid-base64-json`);
+  assert.equal(res.status, 400);
+});

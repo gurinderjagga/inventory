@@ -53,6 +53,11 @@ async function authMiddlewareImpl(req, res, next) {
   const user = { id: row.id, username: row.username, role: row.role };
   if (user.role === 'sub_admin') {
     user.companyIds = row.company_ids;
+    // A Set alongside the array, not instead of it: features.js needs the
+    // array form for `= ANY($2)` and `.length`, while rbac.js and
+    // companies.js only ever ask "is this one id in the set" — an O(1)
+    // .has() rather than a linear .includes() scan repeated once per company.
+    user.companyIdSet = new Set(row.company_ids);
   }
 
   req.user = user;
